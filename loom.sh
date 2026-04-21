@@ -12,7 +12,7 @@ usage:
   loom.sh status
 
 notes:
-  - run from a repo containing .loom/, or from any subdirectory inside that repo
+  - this script operates on the .loom/ directory it lives in
   - stitches are directories with an instructions.md file
   - root entries in .loom/threads/ are ready now
   - child stitch directories are continuations
@@ -24,22 +24,12 @@ die() {
   exit 1
 }
 
-find_repo_root() {
-  local dir="$PWD"
-  while [[ "$dir" != "/" ]]; do
-    if [[ -d "$dir/.loom" ]]; then
-      printf '%s\n' "$dir"
-      return 0
-    fi
-    dir="$(dirname "$dir")"
-  done
-  return 1
-}
-
 require_loom() {
-  REPO_ROOT="$(find_repo_root || true)"
-  [[ -n "${REPO_ROOT:-}" ]] || die "could not find .loom/ in this directory or any parent"
-  LOOM_DIR="$REPO_ROOT/.loom"
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  [[ "$(basename "$script_dir")" == ".loom" ]] || die "loom.sh must live inside a .loom/ directory"
+  LOOM_DIR="$script_dir"
+  REPO_ROOT="$(dirname "$LOOM_DIR")"
 }
 
 validate_id() {
