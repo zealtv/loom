@@ -22,9 +22,7 @@ Anyone — a script, an AI, or a human — can create, stitch, tie off, drop, or
 
 ## ✨ Install
 
-Clone the repo.
-
-That is enough to begin.
+Clone the repo. That is enough to begin.
 
 There is no database, no daemon, no hidden state, and no scaffolder.
 
@@ -66,7 +64,6 @@ This means:
 - root entries in `threads/` are ready now
 - child stitch directories are continuations
 - branches are allowed
-- merges are not part of v1
 
 ## 📏 Rules
 
@@ -78,13 +75,6 @@ This means:
 
 The file system is the protocol.
 
-## 🔄 Stitch states
-
-```text
-.loom/threads/    stitch-001/             → stitch-001.stitching/
-.loom/tied/       stitch-001/
-.loom/dropped/    stitch-001/             + stitch-001.reason.md
-```
 
 ## 🪄 instructions.md
 
