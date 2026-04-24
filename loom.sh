@@ -7,17 +7,21 @@ usage:
   loom.sh init
   loom.sh new <stitch-id> [parent-stitch-id]
   loom.sh claim <stitch-id>
+  loom.sh wait <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
-  loom.sh tips
+  loom.sh loose-ends
+  loom.sh waiting
+  loom.sh next
   loom.sh status
 
 notes:
   - this script operates on the .loom/ directory it lives in
   - stitches are directories with an instructions.md file
-  - root entries in .loom/threads/ are goals
+  - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
-  - leaf stitches are the work ready now
+  - a stitch with no children is a loose end — the work ready now
+  - .stitching means claimed; .waiting means blocked on something external
 USAGE
 }
 
@@ -43,6 +47,7 @@ validate_id() {
 strip_state_suffix() {
   local name="$1"
   name="${name%.stitching}"
+  name="${name%.waiting}"
   printf '%s\n' "$name"
 }
 
@@ -51,7 +56,7 @@ find_stitch_anywhere() {
   local base="$2"
   find "$base" \
     -type d \
-    \( -name "$id" -o -name "$id.stitching" \) \
+    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" \) \
     -print
 }
 
@@ -90,8 +95,9 @@ EOF_STITCH
 }
 
 cmd_init() {
-  mkdir -p .loom/threads .loom/tied .loom/dropped
-  echo "initialized .loom/"
+  require_loom
+  mkdir -p "$LOOM_DIR/threads" "$LOOM_DIR/tied" "$LOOM_DIR/dropped"
+  echo "initialized $LOOM_DIR"
 }
 
 cmd_new() {
@@ -119,6 +125,17 @@ cmd_new() {
         die "cannot add child to tied stitch '$parent_id'"
         ;;
     esac
+
+    local parent_base
+    parent_base="$(basename "$parent")"
+    if [[ "$parent_base" == *.stitching || "$parent_base" == *.waiting ]]; then
+      local parent_dir unsuffixed
+      parent_dir="$(dirname "$parent")"
+      unsuffixed="$parent_dir/$parent_id"
+      mv "$parent" "$unsuffixed"
+      parent="$unsuffixed"
+    fi
+
     target_parent="$parent"
   fi
 
@@ -151,6 +168,10 @@ cmd_claim() {
   if [[ "$name" == *.stitching ]]; then
     echo "already stitching: $id"
     return 0
+  fi
+
+  if has_child_dirs "$existing"; then
+    die "'$id' is not a loose end — it has children. only loose ends can be claimed."
   fi
 
   local parent_dir
@@ -237,10 +258,12 @@ print_stitch_tree() {
     local tag=""
     if [[ "$name" == *.stitching ]]; then
       tag=" (claimed)"
+    elif [[ "$name" == *.waiting ]]; then
+      tag=" (waiting)"
     elif has_child_dirs "$entry"; then
       :
     else
-      tag=" (leaf)"
+      tag=" (loose end)"
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
     print_stitch_tree "$entry" "$prefix$child_prefix"
@@ -260,14 +283,14 @@ has_child_dirs() {
 }
 
 list_goals() {
-  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
 }
 
-list_unclaimed_leaves() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' | while read -r dir; do
+list_loose_ends() {
+  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' ! -name '*.waiting' | while read -r dir; do
     local base
     base="$(basename "$dir")"
-    [[ "$base" == *.stitching ]] && continue
+    [[ "$base" == *.stitching || "$base" == *.waiting ]] && continue
     if ! has_child_dirs "$dir"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
@@ -280,6 +303,12 @@ list_claimed() {
   done | sort
 }
 
+list_waiting() {
+  find "$LOOM_DIR/threads" -mindepth 1 -type d -name '*.waiting' | while read -r dir; do
+    printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+  done | sort
+}
+
 count_entries() {
   local dir="$1"
   find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '
@@ -288,7 +317,7 @@ count_entries() {
 cmd_status() {
   require_loom
 
-  echo "🎯 goals"
+  echo "🎯 goal stitches"
   if [[ -n "$(list_goals)" ]]; then
     list_goals | sed 's/^/- /'
   else
@@ -296,11 +325,11 @@ cmd_status() {
   fi
 
   echo
-  echo "🍃 unclaimed leaves (ready to work)"
-  local leaves
-  leaves="$(list_unclaimed_leaves)"
-  if [[ -n "$leaves" ]]; then
-    printf '%s\n' "$leaves" | sed 's/^/- /'
+  echo "➰ loose ends (ready to work)"
+  local loose
+  loose="$(list_loose_ends)"
+  if [[ -n "$loose" ]]; then
+    printf '%s\n' "$loose" | sed 's/^/- /'
   else
     echo "(none)"
   fi
@@ -311,6 +340,16 @@ cmd_status() {
   claimed="$(list_claimed)"
   if [[ -n "$claimed" ]]; then
     printf '%s\n' "$claimed" | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
+  echo "⏳ waiting"
+  local waiting
+  waiting="$(list_waiting)"
+  if [[ -n "$waiting" ]]; then
+    printf '%s\n' "$waiting" | sed 's/^/- /'
   else
     echo "(none)"
   fi
@@ -328,13 +367,60 @@ cmd_status() {
   printf '🗑️  dropped: %s\n' "$(count_entries "$LOOM_DIR/dropped")"
 }
 
-cmd_tips() {
+cmd_loose_ends() {
   require_loom
-  local leaves
-  leaves="$(list_unclaimed_leaves)"
-  if [[ -n "$leaves" ]]; then
-    printf '%s\n' "$leaves"
+  local loose
+  loose="$(list_loose_ends)"
+  if [[ -n "$loose" ]]; then
+    printf '%s\n' "$loose"
   fi
+}
+
+cmd_waiting() {
+  require_loom
+  list_waiting
+}
+
+cmd_next() {
+  require_loom
+  list_loose_ends | head -n 1
+}
+
+cmd_wait() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "wait requires <stitch-id>"
+  validate_id "$id"
+
+  local existing
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+
+  case "$existing" in
+    "$LOOM_DIR/tied"/*)
+      die "cannot wait a tied stitch"
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      die "cannot wait a dropped stitch"
+      ;;
+  esac
+
+  local name
+  name="$(basename "$existing")"
+  if [[ "$name" == *.waiting ]]; then
+    echo "already waiting: $id"
+    return 0
+  fi
+
+  if has_child_dirs "$existing"; then
+    die "'$id' is not a loose end — it has children. only loose ends can wait."
+  fi
+
+  local parent_dir
+  parent_dir="$(dirname "$existing")"
+  local waiting="$parent_dir/$id.waiting"
+  mv "$existing" "$waiting"
+  echo "waiting $id"
 }
 
 cmd_drop() {
@@ -396,6 +482,10 @@ main() {
       shift
       cmd_claim "$@"
       ;;
+    wait)
+      shift
+      cmd_wait "$@"
+      ;;
     tie)
       shift
       cmd_tie "$@"
@@ -404,9 +494,17 @@ main() {
       shift
       cmd_drop "$@"
       ;;
-    tips)
+    loose-ends)
       shift
-      cmd_tips "$@"
+      cmd_loose_ends "$@"
+      ;;
+    waiting)
+      shift
+      cmd_waiting "$@"
+      ;;
+    next)
+      shift
+      cmd_next "$@"
       ;;
     status)
       shift

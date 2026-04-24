@@ -2,9 +2,9 @@
 
 A tiny, file-based protocol for planning and tending chains of work.
 
-A stitch is one small intention. Stitches form threads.
+A **stitch** is one small intention. A **thread** is a goal and everything that decomposes from it.
 
-When you open `.loom/threads/`, you are looking at the goals you are working toward.
+When you open `.loom/threads/`, you are looking at the work you have on the loom.
 
 ```
 .loom/
@@ -17,58 +17,72 @@ When you open `.loom/threads/`, you are looking at the goals you are working tow
 
 A loom holds work that has shape.
 
-A stitch at the root of `threads/` is a goal. Its children are the stitches it decomposes into. The leaves are where real work happens.
+Every thread has a **goal stitch** at its root — the outcome you want. The goal decomposes into child stitches. A stitch with no children is a **loose end** — a concrete action ready to be worked.
 
-To work a loom, you walk down a goal to a leaf, tend the leaf, and walk back up — tying off stitches as their children complete.
+To work a loom, pick a loose end, tend it, and tie it off. When every sibling of a stitch is resolved, its parent becomes a loose end in turn. You keep tying off up the thread until the goal stitch is tied — then the thread is done.
 
-## How loom works
+## Structure
 
 A stitch is a directory with an `instructions.md` file.
 
 ```
 .loom/
   threads/
-    stitch-001/
+    goal-stitch/
       instructions.md
-      stitch-002/
+      child-stitch/
         instructions.md
 ```
 
-* root entries in `threads/` are goals
-* child stitches are the decomposition
-* a leaf stitch has no children — it is the work ready now
-* a stitch has zero or one parent
-* branches are allowed
+* Top-level entries in `threads/` are goal stitches — one per thread.
+* Children are the decomposition.
+* A stitch has zero or one parent.
+* Threads may branch.
 
 ## Rules
 
 1. One stitch, one place.
-2. Claim by suffix: `stitch-001/` → `stitch-001.stitching/`
-3. Tie off by move: move a stitch to `tied/`
-4. A stitch can only be tied off when all its children are tied off or dropped.
-5. Drop by move: move a stitch to `dropped/` and write `stitch-001.reason.md`
+2. Claim by suffix: `stitch-001/` → `stitch-001.stitching/`. Only loose ends can be claimed.
+3. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch is a loose end blocked on something external.
+4. Tie off by move: move a stitch to `tied/`. A stitch can only be tied off when all its children are tied or dropped.
+5. Drop by move: move a stitch to `dropped/` and write `stitch-001.reason.md`.
 
 The file system is the protocol.
 
+## Claims and waits
+
+The `.stitching` suffix is a claim — *"this one is mine."* POSIX `mv` is atomic, so claims are race-free. Only loose ends are claimed; the claim moves down with the work as you split.
+
+The `.waiting` suffix marks a loose end blocked on something external — a build, a review, another person. Waiting stitches are excluded from `loose-ends` and `next`. To resume one, claim it again.
+
 ## Agent loop
 
-1. Look at `.loom/threads/` and pick a goal
-2. Walk down into the goal to find a leaf stitch
-3. Read its `instructions.md`
-4. Claim it by renaming the directory with `.stitching`
-5. Work
-6. Either:
-   * tie it off
-   * drop it with a reason
-   * or split it by creating child stitches inside it
+1. Run `./loom.sh next` (or `./loom.sh loose-ends` to see all of them). Loose ends are listed alphanumerically — if order matters, name stitches in the order you want them taken.
+2. Claim it: `./loom.sh claim <stitch-id>`.
+3. Read its `instructions.md`. Ask: *what is the next concrete action?*
+4. Decide:
+   * the outcome is no longer wanted → **drop** with a reason
+   * you can name the next action → **do it and tie off**
+   * the next step is blocked on something external → **wait** (excluded from loose ends until you claim it again)
+   * you can't yet name the next step → **split** into child stitches; the parent is unclaimed automatically, then claim one of the children
 
-When a stitch is tied off, walk up to its parent. If all siblings are resolved, the parent is now a leaf and can be tended.
+Keep loose ends small and direct. If a stitch is trying to do too much, split it.
 
-Keep stitches small. Split a stitch when it starts doing too much.
+## Sequence and parallel
+
+Siblings are parallel. A parent waits for its children.
+
+To express *A must happen before B*: make B the parent and place A inside it as a child. A must be tied before B can be tied.
+
+When two siblings both need to happen, name them so they sort in the order you want them taken. Loose ends are listed alphanumerically.
+
+## Artifacts
+
+Notes, logs, decisions, intermediate files — put them inside the stitch directory. They travel with the stitch into `tied/` or `dropped/`, leaving a durable record of what happened.
 
 ## instructions.md
 
-`instructions.md` is the conventional file that tells a human or agent what the stitch is for.
+`instructions.md` is the conventional file that tells a human or agent what a stitch is for.
 
 Keep it short. Keep it concrete.
 
@@ -86,8 +100,11 @@ It can contain:
 ./loom.sh init
 ./loom.sh new <stitch-id> [parent-stitch-id]
 ./loom.sh claim <stitch-id>
+./loom.sh wait <stitch-id>
 ./loom.sh tie <stitch-id>
 ./loom.sh drop <stitch-id> [reason...]
-./loom.sh tips
+./loom.sh loose-ends
+./loom.sh waiting
+./loom.sh next
 ./loom.sh status
 ```
