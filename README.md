@@ -1,6 +1,6 @@
 # 🪡 loom
 
-A tiny, file-based protocol for planning and tending chains of work.
+A tiny, file-based protocol for planning and sewing chains of work.
 
 A stitch is one small intention. Stitches form threads.
 
@@ -17,9 +17,9 @@ When you open `.loom/threads/`, you are looking at the goals you are working tow
 
 A loom holds work that has shape.
 
-A stitch at the root of `threads/` is a goal. Its children are the stitches it decomposes into. The leaves are where real work happens.
+A stitch at the root of `threads/` is a goal. Its children are the stitches it decomposes into. The tips are where real work happens.
 
-To work a loom, you walk down a goal to a leaf, tend the leaf, and walk back up — tying off stitches as their children complete.
+To work a loom, you walk down a goal to a tip, sew the tip, and walk back up — tying off stitches as their children complete.
 
 ## How loom works
 
@@ -36,7 +36,7 @@ A stitch is a directory with an `instructions.md` file.
 
 * root entries in `threads/` are goals
 * child stitches are the decomposition
-* a leaf stitch has no children — it is the work ready now
+* a tip stitch has no children — it is the work ready now
 * a stitch has zero or one parent
 * branches are allowed
 
@@ -53,7 +53,7 @@ The file system is the protocol.
 ## Agent loop
 
 1. Look at `.loom/threads/` and pick a goal
-2. Walk down into the goal to find a leaf stitch
+2. Walk down into the goal to find a tip stitch
 3. Read its `instructions.md`
 4. Claim it by renaming the directory with `.stitching`
 5. Work
@@ -62,7 +62,7 @@ The file system is the protocol.
    * drop it with a reason
    * or split it by creating child stitches inside it
 
-When a stitch is tied off, walk up to its parent. If all siblings are resolved, the parent is now a leaf and can be tended.
+When a stitch is tied off, walk up to its parent. If all siblings are resolved, the parent is now a tip and can be sewn.
 
 Keep stitches small. Split a stitch when it starts doing too much.
 
