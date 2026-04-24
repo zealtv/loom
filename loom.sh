@@ -17,7 +17,7 @@ notes:
   - stitches are directories with an instructions.md file
   - root entries in .loom/threads/ are goals
   - child stitches are the decomposition of their parent
-  - leaf stitches are the work ready now
+  - tip stitches are the work ready now
 USAGE
 }
 
@@ -240,7 +240,7 @@ print_stitch_tree() {
     elif has_child_dirs "$entry"; then
       :
     else
-      tag=" (leaf)"
+      tag=" (tip)"
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
     print_stitch_tree "$entry" "$prefix$child_prefix"
@@ -263,7 +263,7 @@ list_goals() {
   find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
 }
 
-list_unclaimed_leaves() {
+list_unclaimed_tips() {
   find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' | while read -r dir; do
     local base
     base="$(basename "$dir")"
@@ -296,11 +296,11 @@ cmd_status() {
   fi
 
   echo
-  echo "🍃 unclaimed leaves (ready to work)"
-  local leaves
-  leaves="$(list_unclaimed_leaves)"
-  if [[ -n "$leaves" ]]; then
-    printf '%s\n' "$leaves" | sed 's/^/- /'
+  echo "🪡 unclaimed tips (ready to sew)"
+  local tips
+  tips="$(list_unclaimed_tips)"
+  if [[ -n "$tips" ]]; then
+    printf '%s\n' "$tips" | sed 's/^/- /'
   else
     echo "(none)"
   fi
@@ -330,10 +330,10 @@ cmd_status() {
 
 cmd_tips() {
   require_loom
-  local leaves
-  leaves="$(list_unclaimed_leaves)"
-  if [[ -n "$leaves" ]]; then
-    printf '%s\n' "$leaves"
+  local tips
+  tips="$(list_unclaimed_tips)"
+  if [[ -n "$tips" ]]; then
+    printf '%s\n' "$tips"
   fi
 }
 
