@@ -5,17 +5,19 @@ usage() {
   cat <<'USAGE'
 usage:
   loom.sh init
-  loom.sh new <stitch-id> [after-stitch-id]
+  loom.sh new <stitch-id> [parent-stitch-id]
   loom.sh claim <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
+  loom.sh tips
   loom.sh status
 
 notes:
   - this script operates on the .loom/ directory it lives in
   - stitches are directories with an instructions.md file
-  - root entries in .loom/threads/ are ready now
-  - child stitch directories are continuations
+  - root entries in .loom/threads/ are goals
+  - child stitches are the decomposition of their parent
+  - leaf stitches are the work ready now
 USAGE
 }
 
@@ -95,31 +97,29 @@ cmd_init() {
 cmd_new() {
   require_loom
   local id="${1:-}"
-  local after_id="${2:-}"
+  local parent_id="${2:-}"
   [[ -n "$id" ]] || die "new requires <stitch-id>"
   validate_id "$id"
   ensure_unique_new_id "$id"
 
   local target_parent
-  if [[ -z "$after_id" ]]; then
+  if [[ -z "$parent_id" ]]; then
     target_parent="$LOOM_DIR/threads"
   else
-    validate_id "$after_id"
-    local predecessor
-    predecessor="$(find_unique_stitch_anywhere "$after_id" || true)"
-    [[ -n "$predecessor" ]] || die "predecessor '$after_id' not found"
+    validate_id "$parent_id"
+    local parent
+    parent="$(find_unique_stitch_anywhere "$parent_id" || true)"
+    [[ -n "$parent" ]] || die "parent '$parent_id' not found"
 
-    case "$predecessor" in
+    case "$parent" in
       "$LOOM_DIR/dropped"/*)
-        die "cannot continue from dropped stitch '$after_id'"
+        die "cannot add child to dropped stitch '$parent_id'"
         ;;
       "$LOOM_DIR/tied"/*)
-        target_parent="$LOOM_DIR/threads"
-        ;;
-      *)
-        target_parent="$predecessor"
+        die "cannot add child to tied stitch '$parent_id'"
         ;;
     esac
+    target_parent="$parent"
   fi
 
   local created
@@ -133,30 +133,31 @@ cmd_claim() {
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
 
-  local plain="$LOOM_DIR/threads/$id"
-  local claimed="$LOOM_DIR/threads/$id.stitching"
+  local existing
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
 
-  if [[ -d "$claimed" ]]; then
+  case "$existing" in
+    "$LOOM_DIR/tied"/*)
+      die "cannot claim a tied stitch"
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      die "cannot claim a dropped stitch"
+      ;;
+  esac
+
+  local name
+  name="$(basename "$existing")"
+  if [[ "$name" == *.stitching ]]; then
     echo "already stitching: $id"
     return 0
   fi
-  [[ -d "$plain" ]] || die "claim only works on ready stitches at .loom/threads/"
-  mv "$plain" "$claimed"
-  echo "claimed $id"
-}
 
-promote_children() {
-  local dir="$1"
-  local child
-  shopt -s nullglob
-  for child in "$dir"/*; do
-    [[ -d "$child" ]] || continue
-    local name
-    name="$(basename "$child")"
-    [[ ! -e "$LOOM_DIR/threads/$name" ]] || die "cannot promote '$name': already exists at .loom/threads/"
-    mv "$child" "$LOOM_DIR/threads/$name"
-  done
-  shopt -u nullglob
+  local parent_dir
+  parent_dir="$(dirname "$existing")"
+  local claimed="$parent_dir/$id.stitching"
+  mv "$existing" "$claimed"
+  echo "claimed $id"
 }
 
 cmd_tie() {
@@ -166,18 +167,46 @@ cmd_tie() {
   validate_id "$id"
 
   local src
-  if [[ -d "$LOOM_DIR/threads/$id.stitching" ]]; then
-    src="$LOOM_DIR/threads/$id.stitching"
-  elif [[ -d "$LOOM_DIR/threads/$id" ]]; then
-    src="$LOOM_DIR/threads/$id"
-  else
-    die "tie only works on ready stitches at .loom/threads/"
+  src="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$src" ]] || die "stitch '$id' not found"
+
+  case "$src" in
+    "$LOOM_DIR/tied"/*)
+      echo "already tied: $id"
+      return 0
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      die "cannot tie a dropped stitch"
+      ;;
+    "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
+      ;;
+    *)
+      die "stitch '$id' is not under threads/"
+      ;;
+  esac
+
+  local child
+  local unresolved=()
+  shopt -s nullglob
+  for child in "$src"/*/; do
+    child="${child%/}"
+    [[ -d "$child" ]] || continue
+    unresolved+=("$(basename "$child")")
+  done
+  shopt -u nullglob
+
+  if (( ${#unresolved[@]} > 0 )); then
+    echo "error: cannot tie '$id' — unresolved children in threads/:" >&2
+    printf '  - %s\n' "${unresolved[@]}" >&2
+    echo "tie or drop each child before tying its parent." >&2
+    exit 1
   fi
 
   local canonical
   canonical="$(strip_state_suffix "$(basename "$src")")"
-  promote_children "$src"
-  mv "$src" "$LOOM_DIR/tied/$canonical"
+  local dest="$LOOM_DIR/tied/$canonical"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$src" "$dest"
   echo "tied $canonical"
 }
 
@@ -205,15 +234,89 @@ print_stitch_tree() {
       branch="└──"
       child_prefix="    "
     fi
-    printf '%s%s %s\n' "$prefix" "$branch" "$name"
+    local tag=""
+    if [[ "$name" == *.stitching ]]; then
+      tag=" (claimed)"
+    elif has_child_dirs "$entry"; then
+      :
+    else
+      tag=" (leaf)"
+    fi
+    printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
     print_stitch_tree "$entry" "$prefix$child_prefix"
   done
+}
+
+has_child_dirs() {
+  local dir="$1"
+  local child
+  shopt -s nullglob
+  for child in "$dir"/*/; do
+    shopt -u nullglob
+    return 0
+  done
+  shopt -u nullglob
+  return 1
+}
+
+list_goals() {
+  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+}
+
+list_unclaimed_leaves() {
+  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' | while read -r dir; do
+    local base
+    base="$(basename "$dir")"
+    [[ "$base" == *.stitching ]] && continue
+    if ! has_child_dirs "$dir"; then
+      printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+    fi
+  done | sort
+}
+
+list_claimed() {
+  find "$LOOM_DIR/threads" -mindepth 1 -type d -name '*.stitching' | while read -r dir; do
+    printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+  done | sort
+}
+
+count_entries() {
+  local dir="$1"
+  find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '
 }
 
 cmd_status() {
   require_loom
 
-  echo "🧵 threads"
+  echo "🎯 goals"
+  if [[ -n "$(list_goals)" ]]; then
+    list_goals | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
+  echo "🍃 unclaimed leaves (ready to work)"
+  local leaves
+  leaves="$(list_unclaimed_leaves)"
+  if [[ -n "$leaves" ]]; then
+    printf '%s\n' "$leaves" | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
+  echo "🧵 claimed"
+  local claimed
+  claimed="$(list_claimed)"
+  if [[ -n "$claimed" ]]; then
+    printf '%s\n' "$claimed" | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
+  echo "🌳 tree"
   if find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
     print_stitch_tree "$LOOM_DIR/threads"
   else
@@ -221,19 +324,16 @@ cmd_status() {
   fi
 
   echo
-  echo "✅ tied"
-  if find "$LOOM_DIR/tied" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
-    find "$LOOM_DIR/tied" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | sed 's/^/- /'
-  else
-    echo "(empty)"
-  fi
+  printf '✅ tied: %s\n' "$(count_entries "$LOOM_DIR/tied")"
+  printf '🗑️  dropped: %s\n' "$(count_entries "$LOOM_DIR/dropped")"
+}
 
-  echo
-  echo "🗑️  dropped"
-  if find "$LOOM_DIR/dropped" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
-    find "$LOOM_DIR/dropped" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | sed 's/^/- /'
-  else
-    echo "(empty)"
+cmd_tips() {
+  require_loom
+  local leaves
+  leaves="$(list_unclaimed_leaves)"
+  if [[ -n "$leaves" ]]; then
+    printf '%s\n' "$leaves"
   fi
 }
 
@@ -303,6 +403,10 @@ main() {
     drop)
       shift
       cmd_drop "$@"
+      ;;
+    tips)
+      shift
+      cmd_tips "$@"
       ;;
     status)
       shift
