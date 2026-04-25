@@ -14,6 +14,7 @@ usage:
   loom.sh waiting
   loom.sh next
   loom.sh status
+  loom.sh sweep [days]
 
 notes:
   - this script operates on the .loom/ directory it lives in
@@ -463,6 +464,30 @@ cmd_drop() {
   echo "dropped $canonical"
 }
 
+sweep_dir() {
+  local dir="$1" kind="$2" days="$3"
+  [[ -d "$dir" ]] || return 0
+  local entry name
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    name="$(basename "$entry")"
+    rm -rf -- "$entry"
+    if [[ "$kind" == "dropped" && -e "$dir/$name.reason.md" ]]; then
+      rm -f -- "$dir/$name.reason.md"
+    fi
+    printf 'swept %s %s\n' "$kind" "$name"
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$days" \
+             ! -name '*.reason.md' | sort)
+}
+
+cmd_sweep() {
+  require_loom
+  local days="${1:-14}"
+  [[ "$days" =~ ^[0-9]+$ ]] || die "sweep <days> must be a non-negative integer"
+  sweep_dir "$LOOM_DIR/tied" tied "$days"
+  sweep_dir "$LOOM_DIR/dropped" dropped "$days"
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -509,6 +534,10 @@ main() {
     status)
       shift
       cmd_status "$@"
+      ;;
+    sweep)
+      shift
+      cmd_sweep "$@"
       ;;
     -h|--help|help|"")
       usage

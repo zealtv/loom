@@ -107,4 +107,5 @@ It can contain:
 ./loom.sh waiting
 ./loom.sh next
 ./loom.sh status
+./loom.sh sweep [days]   # remove tied/dropped older than N days (default 14); prints one line per item
 ```
