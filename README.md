@@ -8,6 +8,7 @@ When you open `.loom/threads/`, you are looking at the work you have on the loom
 
 ```
 .loom/
+  loom.sh
   threads/
   tied/
   dropped/
