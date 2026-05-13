@@ -95,6 +95,22 @@ It can contain:
 * constraints
 * a checklist
 
+## Vendoring
+
+To add loom to another project, copy `loom.sh` and `README.md` into the
+project's `.loom/` directory, then run `./.loom/loom.sh init` to seed the
+trays:
+
+```sh
+mkdir -p <project>/.loom
+cp loom.sh README.md <project>/.loom/
+<project>/.loom/loom.sh init
+```
+
+`init` creates `threads/`, `tied/`, and `dropped/` next to itself.
+`loom.sh` operates on the `.loom/` directory it lives in, so each
+vendored copy is self-contained.
+
 ## Commands
 
 ```
