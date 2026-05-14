@@ -73,6 +73,8 @@ The `.stitching` suffix is a claim — *"this one is mine."* POSIX `mv` is atomi
 
 The `.waiting` suffix marks a loose end blocked on something external — a build, a review, another person. Waiting stitches are excluded from `loose-ends` and `next`. To resume one, claim it again.
 
+Waiting belongs on loose ends, not parent stitches. To block a whole parent or thread, add a concrete blocker child and mark that child waiting, for example `vendor-approval.waiting/`.
+
 ## Owned threads
 
 The `.owned` suffix is a claim on a whole goal thread — useful when the loom lives on `main`, and the work happens on a feature branch.

@@ -49,10 +49,111 @@ validate_id() {
 
 strip_state_suffix() {
   local name="$1"
-  name="${name%.stitching}"
-  name="${name%.owned}"
-  name="${name%.waiting}"
+  local state
+  for state in stitching owned waiting; do
+    name="${name%.$state}"
+  done
   printf '%s\n' "$name"
+}
+
+state_of_name() {
+  local name="$1"
+  local state
+  for state in stitching owned waiting; do
+    if [[ "$name" == *".$state" ]]; then
+      printf '%s\n' "$state"
+      return 0
+    fi
+  done
+  printf 'plain\n'
+}
+
+state_label() {
+  case "$1" in
+    stitching) printf 'claimed\n' ;;
+    owned) printf 'owned\n' ;;
+    waiting) printf 'waiting\n' ;;
+    plain) printf 'loose end\n' ;;
+  esac
+}
+
+is_goal_dir() {
+  [[ "$(dirname "$1")" == "$LOOM_DIR/threads" ]]
+}
+
+ensure_under_threads() {
+  local dir="$1" id="$2"
+  case "$dir" in
+    "$LOOM_DIR/tied"/*)
+      die "cannot $3 a tied stitch"
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      die "cannot $3 a dropped stitch"
+      ;;
+    "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
+      ;;
+    *)
+      die "stitch '$id' is not under threads/"
+      ;;
+  esac
+}
+
+set_stitch_state() {
+  local id="$1" new_state="$2" scope="$3" action="$4" already="$5" output="$6"
+  local existing name current parent_dir dest
+
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  ensure_under_threads "$existing" "$id" "$action"
+
+  name="$(basename "$existing")"
+  current="$(state_of_name "$name")"
+  if [[ "$current" == "$new_state" ]]; then
+    echo "$already: $id"
+    return 0
+  fi
+
+  case "$scope" in
+    goal)
+      is_goal_dir "$existing" || die "only goal stitches can be $action"
+      [[ "$current" == plain ]] || die "cannot $action a $(state_label "$current") stitch"
+      ;;
+    loose)
+      [[ "$current" != owned ]] || die "cannot $action an owned thread"
+      if has_child_dirs "$existing"; then
+        die "'$id' is not a loose end — it has children. only loose ends can $action."
+      fi
+      ;;
+    *)
+      die "unknown state scope '$scope'"
+      ;;
+  esac
+
+  parent_dir="$(dirname "$existing")"
+  dest="$parent_dir/$id.$new_state"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "$output $id"
+}
+
+clear_stitch_state() {
+  local id="$1" expected_state="$2" action="$3" output="$4"
+  local existing name current parent_dir dest
+
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  ensure_under_threads "$existing" "$id" "$action"
+
+  name="$(basename "$existing")"
+  current="$(state_of_name "$name")"
+  [[ "$current" == "$expected_state" ]] || die "stitch '$id' is not $(state_label "$expected_state")"
+  is_goal_dir "$existing" || die "only goal stitches can be $action"
+
+  parent_dir="$(dirname "$existing")"
+  dest="$parent_dir/$id"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "$output $id"
 }
 
 find_stitch_anywhere() {
@@ -132,7 +233,9 @@ cmd_new() {
 
     local parent_base
     parent_base="$(basename "$parent")"
-    if [[ "$parent_base" == *.stitching || "$parent_base" == *.waiting ]]; then
+    local parent_state
+    parent_state="$(state_of_name "$parent_base")"
+    if [[ "$parent_state" != plain && "$parent_state" != owned ]]; then
       local parent_dir unsuffixed
       parent_dir="$(dirname "$parent")"
       unsuffixed="$parent_dir/$parent_id"
@@ -153,37 +256,7 @@ cmd_claim() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
-
-  local existing
-  existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
-
-  case "$existing" in
-    "$LOOM_DIR/tied"/*)
-      die "cannot claim a tied stitch"
-      ;;
-    "$LOOM_DIR/dropped"/*)
-      die "cannot claim a dropped stitch"
-      ;;
-  esac
-
-  local name
-  name="$(basename "$existing")"
-  if [[ "$name" == *.stitching ]]; then
-    echo "already stitching: $id"
-    return 0
-  fi
-  [[ "$name" != *.owned ]] || die "cannot claim an owned thread"
-
-  if has_child_dirs "$existing"; then
-    die "'$id' is not a loose end — it has children. only loose ends can be claimed."
-  fi
-
-  local parent_dir
-  parent_dir="$(dirname "$existing")"
-  local claimed="$parent_dir/$id.stitching"
-  mv "$existing" "$claimed"
-  echo "claimed $id"
+  set_stitch_state "$id" stitching loose claim "already stitching" claimed
 }
 
 cmd_own() {
@@ -191,33 +264,7 @@ cmd_own() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "own requires <goal-stitch-id>"
   validate_id "$id"
-
-  local existing
-  existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
-
-  case "$existing" in
-    "$LOOM_DIR/tied"/*)
-      die "cannot own a tied stitch"
-      ;;
-    "$LOOM_DIR/dropped"/*)
-      die "cannot own a dropped stitch"
-      ;;
-  esac
-
-  local name
-  name="$(basename "$existing")"
-  if [[ "$name" == *.owned ]]; then
-    echo "already owned: $id"
-    return 0
-  fi
-
-  [[ "$(dirname "$existing")" == "$LOOM_DIR/threads" ]] || die "only goal stitches can be owned"
-  [[ "$name" != *.stitching ]] || die "cannot own a claimed loose end"
-  [[ "$name" != *.waiting ]] || die "cannot own a waiting loose end"
-
-  mv "$existing" "$LOOM_DIR/threads/$id.owned"
-  echo "owned $id"
+  set_stitch_state "$id" owned goal own "already owned" owned
 }
 
 cmd_unown() {
@@ -225,20 +272,7 @@ cmd_unown() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "unown requires <goal-stitch-id>"
   validate_id "$id"
-
-  local existing
-  existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
-
-  local name
-  name="$(basename "$existing")"
-  [[ "$name" == *.owned ]] || die "stitch '$id' is not owned"
-  [[ "$(dirname "$existing")" == "$LOOM_DIR/threads" ]] || die "only goal stitches can be unowned"
-
-  local dest="$LOOM_DIR/threads/$id"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
-  mv "$existing" "$dest"
-  echo "unowned $id"
+  clear_stitch_state "$id" owned unown unowned
 }
 
 cmd_tie() {
@@ -316,12 +350,10 @@ print_stitch_tree() {
       child_prefix="    "
     fi
     local tag=""
-    if [[ "$name" == *.stitching ]]; then
-      tag=" (claimed)"
-    elif [[ "$name" == *.owned ]]; then
-      tag=" (owned)"
-    elif [[ "$name" == *.waiting ]]; then
-      tag=" (waiting)"
+    local state
+    state="$(state_of_name "$name")"
+    if [[ "$state" != plain ]]; then
+      tag=" ($(state_label "$state"))"
     elif has_child_dirs "$entry"; then
       :
     else
@@ -349,10 +381,10 @@ list_goals() {
 }
 
 list_loose_ends() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' ! -name '*.owned' ! -name '*.waiting' | while read -r dir; do
+  find "$LOOM_DIR/threads" -mindepth 1 -type d | while read -r dir; do
     local base
     base="$(basename "$dir")"
-    [[ "$base" == *.stitching || "$base" == *.owned || "$base" == *.waiting ]] && continue
+    [[ "$(state_of_name "$base")" == plain ]] || continue
     if ! has_child_dirs "$dir"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
@@ -360,19 +392,25 @@ list_loose_ends() {
 }
 
 list_claimed() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d -name '*.stitching' | while read -r dir; do
-    printf '%s\n' "${dir#$LOOM_DIR/threads/}"
-  done | sort
+  list_by_state stitching
 }
 
 list_owned() {
-  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -name '*.owned' | while read -r dir; do
-    printf '%s\n' "${dir#$LOOM_DIR/threads/}"
-  done | sort
+  list_by_state owned goal
 }
 
 list_waiting() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d -name '*.waiting' | while read -r dir; do
+  list_by_state waiting
+}
+
+list_by_state() {
+  local state="$1" scope="${2:-any}"
+  local maxdepth=()
+  if [[ "$scope" == goal ]]; then
+    maxdepth=(-maxdepth 1)
+  fi
+
+  find "$LOOM_DIR/threads" -mindepth 1 "${maxdepth[@]}" -type d -name "*.$state" | while read -r dir; do
     printf '%s\n' "${dir#$LOOM_DIR/threads/}"
   done | sort
 }
@@ -469,37 +507,7 @@ cmd_wait() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "wait requires <stitch-id>"
   validate_id "$id"
-
-  local existing
-  existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
-
-  case "$existing" in
-    "$LOOM_DIR/tied"/*)
-      die "cannot wait a tied stitch"
-      ;;
-    "$LOOM_DIR/dropped"/*)
-      die "cannot wait a dropped stitch"
-      ;;
-  esac
-
-  local name
-  name="$(basename "$existing")"
-  if [[ "$name" == *.waiting ]]; then
-    echo "already waiting: $id"
-    return 0
-  fi
-  [[ "$name" != *.owned ]] || die "cannot wait an owned thread"
-
-  if has_child_dirs "$existing"; then
-    die "'$id' is not a loose end — it has children. only loose ends can wait."
-  fi
-
-  local parent_dir
-  parent_dir="$(dirname "$existing")"
-  local waiting="$parent_dir/$id.waiting"
-  mv "$existing" "$waiting"
-  echo "waiting $id"
+  set_stitch_state "$id" waiting loose wait "already waiting" waiting
 }
 
 cmd_drop() {
