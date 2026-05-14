@@ -16,14 +16,14 @@ When you open `.loom/threads/`, you are looking at the work you have on the loom
 
 ## Quickstart
 
-Install from GitHub run:
+To install from GitHub run:
 
 ```sh
-mkdir -p .loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/loom.sh -o .loom/loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/README.md -o .loom/README.md && chmod +x .loom/loom && (cd .loom && ./loom init)
+mkdir -p .loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/.loom/loom.sh -o .loom/loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/README.md -o .loom/README.md && chmod +x .loom/loom && (cd .loom && ./loom init)
 ```
 
-This copies `loom.sh` and `README.md` into the
-project's newly created `.loom/` directory, then runs `./.loom/loom.sh init` to seed the
+This copies `loom` and `README.md` into the
+project's newly created `.loom/` directory, then runs `./loom init` to seed the
 trays.
 
 `init` creates `threads/`, `tied/`, and `dropped/` next to itself.
