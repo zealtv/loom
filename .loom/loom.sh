@@ -7,6 +7,8 @@ usage:
   loom.sh init
   loom.sh new <stitch-id> [parent-stitch-id]
   loom.sh claim <stitch-id>
+  loom.sh own <goal-stitch-id>
+  loom.sh unown <goal-stitch-id>
   loom.sh wait <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
@@ -22,7 +24,7 @@ notes:
   - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
   - a stitch with no children is a loose end — the work ready now
-  - .stitching means claimed; .waiting means blocked on something external
+  - .stitching means claimed; .owned means a claimed goal thread; .waiting means blocked on something external
 USAGE
 }
 
@@ -48,6 +50,7 @@ validate_id() {
 strip_state_suffix() {
   local name="$1"
   name="${name%.stitching}"
+  name="${name%.owned}"
   name="${name%.waiting}"
   printf '%s\n' "$name"
 }
@@ -57,7 +60,7 @@ find_stitch_anywhere() {
   local base="$2"
   find "$base" \
     -type d \
-    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" \) \
+    \( -name "$id" -o -name "$id.stitching" -o -name "$id.owned" -o -name "$id.waiting" \) \
     -print
 }
 
@@ -170,6 +173,7 @@ cmd_claim() {
     echo "already stitching: $id"
     return 0
   fi
+  [[ "$name" != *.owned ]] || die "cannot claim an owned thread"
 
   if has_child_dirs "$existing"; then
     die "'$id' is not a loose end — it has children. only loose ends can be claimed."
@@ -180,6 +184,61 @@ cmd_claim() {
   local claimed="$parent_dir/$id.stitching"
   mv "$existing" "$claimed"
   echo "claimed $id"
+}
+
+cmd_own() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "own requires <goal-stitch-id>"
+  validate_id "$id"
+
+  local existing
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+
+  case "$existing" in
+    "$LOOM_DIR/tied"/*)
+      die "cannot own a tied stitch"
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      die "cannot own a dropped stitch"
+      ;;
+  esac
+
+  local name
+  name="$(basename "$existing")"
+  if [[ "$name" == *.owned ]]; then
+    echo "already owned: $id"
+    return 0
+  fi
+
+  [[ "$(dirname "$existing")" == "$LOOM_DIR/threads" ]] || die "only goal stitches can be owned"
+  [[ "$name" != *.stitching ]] || die "cannot own a claimed loose end"
+  [[ "$name" != *.waiting ]] || die "cannot own a waiting loose end"
+
+  mv "$existing" "$LOOM_DIR/threads/$id.owned"
+  echo "owned $id"
+}
+
+cmd_unown() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "unown requires <goal-stitch-id>"
+  validate_id "$id"
+
+  local existing
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+
+  local name
+  name="$(basename "$existing")"
+  [[ "$name" == *.owned ]] || die "stitch '$id' is not owned"
+  [[ "$(dirname "$existing")" == "$LOOM_DIR/threads" ]] || die "only goal stitches can be unowned"
+
+  local dest="$LOOM_DIR/threads/$id"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "unowned $id"
 }
 
 cmd_tie() {
@@ -259,6 +318,8 @@ print_stitch_tree() {
     local tag=""
     if [[ "$name" == *.stitching ]]; then
       tag=" (claimed)"
+    elif [[ "$name" == *.owned ]]; then
+      tag=" (owned)"
     elif [[ "$name" == *.waiting ]]; then
       tag=" (waiting)"
     elif has_child_dirs "$entry"; then
@@ -288,10 +349,10 @@ list_goals() {
 }
 
 list_loose_ends() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' ! -name '*.waiting' | while read -r dir; do
+  find "$LOOM_DIR/threads" -mindepth 1 -type d ! -name '*.stitching' ! -name '*.owned' ! -name '*.waiting' | while read -r dir; do
     local base
     base="$(basename "$dir")"
-    [[ "$base" == *.stitching || "$base" == *.waiting ]] && continue
+    [[ "$base" == *.stitching || "$base" == *.owned || "$base" == *.waiting ]] && continue
     if ! has_child_dirs "$dir"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
@@ -300,6 +361,12 @@ list_loose_ends() {
 
 list_claimed() {
   find "$LOOM_DIR/threads" -mindepth 1 -type d -name '*.stitching' | while read -r dir; do
+    printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+  done | sort
+}
+
+list_owned() {
+  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -name '*.owned' | while read -r dir; do
     printf '%s\n' "${dir#$LOOM_DIR/threads/}"
   done | sort
 }
@@ -341,6 +408,16 @@ cmd_status() {
   claimed="$(list_claimed)"
   if [[ -n "$claimed" ]]; then
     printf '%s\n' "$claimed" | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
+  echo "🪢 owned threads"
+  local owned
+  owned="$(list_owned)"
+  if [[ -n "$owned" ]]; then
+    printf '%s\n' "$owned" | sed 's/^/- /'
   else
     echo "(none)"
   fi
@@ -412,6 +489,7 @@ cmd_wait() {
     echo "already waiting: $id"
     return 0
   fi
+  [[ "$name" != *.owned ]] || die "cannot wait an owned thread"
 
   if has_child_dirs "$existing"; then
     die "'$id' is not a loose end — it has children. only loose ends can wait."
@@ -506,6 +584,14 @@ main() {
     claim)
       shift
       cmd_claim "$@"
+      ;;
+    own)
+      shift
+      cmd_own "$@"
+      ;;
+    unown)
+      shift
+      cmd_unown "$@"
       ;;
     wait)
       shift
