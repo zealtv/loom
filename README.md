@@ -14,6 +14,22 @@ When you open `.loom/threads/`, you are looking at the work you have on the loom
   dropped/
 ```
 
+## Quickstart
+
+Install from GitHub run:
+
+```sh
+mkdir -p .loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/loom.sh -o .loom/loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/README.md -o .loom/README.md && chmod +x .loom/loom && (cd .loom && ./loom init)
+```
+
+This copies `loom.sh` and `README.md` into the
+project's newly created `.loom/` directory, then runs `./.loom/loom.sh init` to seed the
+trays.
+
+`init` creates `threads/`, `tied/`, and `dropped/` next to itself.
+`loom.sh` operates on the `.loom/` directory it lives in, so each copy is self-contained.
+
+
 ## What a loom is for
 
 A loom holds work that has shape.
@@ -95,21 +111,6 @@ It can contain:
 * constraints
 * a checklist
 
-## Vendoring
-
-To add loom to another project, copy `loom.sh` and `README.md` into the
-project's `.loom/` directory, then run `./.loom/loom.sh init` to seed the
-trays:
-
-```sh
-mkdir -p <project>/.loom
-cp loom.sh README.md <project>/.loom/
-<project>/.loom/loom.sh init
-```
-
-`init` creates `threads/`, `tied/`, and `dropped/` next to itself.
-`loom.sh` operates on the `.loom/` directory it lives in, so each
-vendored copy is self-contained.
 
 ## Commands
 
