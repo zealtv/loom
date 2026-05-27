@@ -60,10 +60,9 @@ A stitch is a directory with an `instructions.md` file.
 
 1. One stitch, one place.
 2. Claim by suffix: `stitch-001/` → `stitch-001.stitching/`. Only loose ends can be claimed.
-3. Own by suffix: `goal-stitch/` → `goal-stitch.owned/`. Only goal stitches can be owned.
-4. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch is a loose end blocked on something external.
-5. Tie off by move: move a stitch to `tied/`. A stitch can only be tied off when all its children are tied or dropped.
-6. Drop by move: move a stitch to `dropped/` and write `stitch-001.reason.md`.
+3. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch is a loose end blocked on something external.
+4. Tie off by move: move a stitch to `tied/`. A stitch can only be tied off when all its children are tied or dropped.
+5. Drop by move: move a stitch to `dropped/` and write `stitch-001.reason.md`.
 
 The file system is the protocol.
 
@@ -74,28 +73,6 @@ The `.stitching` suffix is a claim — *"this one is mine."* POSIX `mv` is atomi
 The `.waiting` suffix marks a loose end blocked on something external — a build, a review, another person. Waiting stitches are excluded from `loose-ends` and `next`. To resume one, claim it again.
 
 Waiting belongs on loose ends, not parent stitches. To block a whole parent or thread, add a concrete blocker child and mark that child waiting, for example `vendor-approval.waiting/`.
-
-## Owned threads
-
-The `.owned` suffix is a claim on a whole goal thread — useful when the loom lives on `main`, and the work happens on a feature branch.
-
-Ownership is only for top-level goal stitches. It does not replace loose-end claims: child stitches under an owned thread are still claimed, waited, tied, and dropped normally.
-
-One branch-friendly loop is:
-
-```sh
-git checkout main
-./loom.sh own billing-refresh
-git checkout -b feature/billing-refresh
-
-./loom.sh next
-./loom.sh claim first-child
-# work, split, wait, tie, or drop loose ends as usual
-
-git checkout main
-git merge feature/billing-refresh
-./loom.sh tie billing-refresh
-```
 
 ## Agent loop
 
@@ -143,8 +120,6 @@ It can contain:
 ./loom.sh init
 ./loom.sh new <stitch-id> [parent-stitch-id]
 ./loom.sh claim <stitch-id>
-./loom.sh own <goal-stitch-id>
-./loom.sh unown <goal-stitch-id>
 ./loom.sh wait <stitch-id>
 ./loom.sh tie <stitch-id>
 ./loom.sh drop <stitch-id> [reason...]

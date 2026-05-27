@@ -7,8 +7,6 @@ usage:
   loom.sh init
   loom.sh new <stitch-id> [parent-stitch-id]
   loom.sh claim <stitch-id>
-  loom.sh own <goal-stitch-id>
-  loom.sh unown <goal-stitch-id>
   loom.sh wait <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
@@ -24,7 +22,7 @@ notes:
   - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
   - a stitch with no children is a loose end — the work ready now
-  - .stitching means claimed; .owned means a claimed goal thread; .waiting means blocked on something external
+  - .stitching means claimed; .waiting means blocked on something external
 USAGE
 }
 
@@ -50,7 +48,7 @@ validate_id() {
 strip_state_suffix() {
   local name="$1"
   local state
-  for state in stitching owned waiting; do
+  for state in stitching waiting; do
     name="${name%.$state}"
   done
   printf '%s\n' "$name"
@@ -59,7 +57,7 @@ strip_state_suffix() {
 state_of_name() {
   local name="$1"
   local state
-  for state in stitching owned waiting; do
+  for state in stitching waiting; do
     if [[ "$name" == *".$state" ]]; then
       printf '%s\n' "$state"
       return 0
@@ -71,14 +69,9 @@ state_of_name() {
 state_label() {
   case "$1" in
     stitching) printf 'claimed\n' ;;
-    owned) printf 'owned\n' ;;
     waiting) printf 'waiting\n' ;;
     plain) printf 'loose end\n' ;;
   esac
-}
-
-is_goal_dir() {
-  [[ "$(dirname "$1")" == "$LOOM_DIR/threads" ]]
 }
 
 ensure_under_threads() {
@@ -114,12 +107,7 @@ set_stitch_state() {
   fi
 
   case "$scope" in
-    goal)
-      is_goal_dir "$existing" || die "only goal stitches can be $action"
-      [[ "$current" == plain ]] || die "cannot $action a $(state_label "$current") stitch"
-      ;;
     loose)
-      [[ "$current" != owned ]] || die "cannot $action an owned thread"
       if has_child_dirs "$existing"; then
         die "'$id' is not a loose end — it has children. only loose ends can $action."
       fi
@@ -136,32 +124,12 @@ set_stitch_state() {
   echo "$output $id"
 }
 
-clear_stitch_state() {
-  local id="$1" expected_state="$2" action="$3" output="$4"
-  local existing name current parent_dir dest
-
-  existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
-  ensure_under_threads "$existing" "$id" "$action"
-
-  name="$(basename "$existing")"
-  current="$(state_of_name "$name")"
-  [[ "$current" == "$expected_state" ]] || die "stitch '$id' is not $(state_label "$expected_state")"
-  is_goal_dir "$existing" || die "only goal stitches can be $action"
-
-  parent_dir="$(dirname "$existing")"
-  dest="$parent_dir/$id"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
-  mv "$existing" "$dest"
-  echo "$output $id"
-}
-
 find_stitch_anywhere() {
   local id="$1"
   local base="$2"
   find "$base" \
     -type d \
-    \( -name "$id" -o -name "$id.stitching" -o -name "$id.owned" -o -name "$id.waiting" \) \
+    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" \) \
     -print
 }
 
@@ -235,7 +203,7 @@ cmd_new() {
     parent_base="$(basename "$parent")"
     local parent_state
     parent_state="$(state_of_name "$parent_base")"
-    if [[ "$parent_state" != plain && "$parent_state" != owned ]]; then
+    if [[ "$parent_state" != plain ]]; then
       local parent_dir unsuffixed
       parent_dir="$(dirname "$parent")"
       unsuffixed="$parent_dir/$parent_id"
@@ -257,22 +225,6 @@ cmd_claim() {
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
   set_stitch_state "$id" stitching loose claim "already stitching" claimed
-}
-
-cmd_own() {
-  require_loom
-  local id="${1:-}"
-  [[ -n "$id" ]] || die "own requires <goal-stitch-id>"
-  validate_id "$id"
-  set_stitch_state "$id" owned goal own "already owned" owned
-}
-
-cmd_unown() {
-  require_loom
-  local id="${1:-}"
-  [[ -n "$id" ]] || die "unown requires <goal-stitch-id>"
-  validate_id "$id"
-  clear_stitch_state "$id" owned unown unowned
 }
 
 cmd_tie() {
@@ -395,10 +347,6 @@ list_claimed() {
   list_by_state stitching
 }
 
-list_owned() {
-  list_by_state owned goal
-}
-
 list_waiting() {
   list_by_state waiting
 }
@@ -446,16 +394,6 @@ cmd_status() {
   claimed="$(list_claimed)"
   if [[ -n "$claimed" ]]; then
     printf '%s\n' "$claimed" | sed 's/^/- /'
-  else
-    echo "(none)"
-  fi
-
-  echo
-  echo "🪢 owned threads"
-  local owned
-  owned="$(list_owned)"
-  if [[ -n "$owned" ]]; then
-    printf '%s\n' "$owned" | sed 's/^/- /'
   else
     echo "(none)"
   fi
@@ -592,14 +530,6 @@ main() {
     claim)
       shift
       cmd_claim "$@"
-      ;;
-    own)
-      shift
-      cmd_own "$@"
-      ;;
-    unown)
-      shift
-      cmd_unown "$@"
       ;;
     wait)
       shift
