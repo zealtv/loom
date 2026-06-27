@@ -7,10 +7,13 @@ usage:
   loom.sh init
   loom.sh new <stitch-id> [parent-stitch-id]
   loom.sh claim <stitch-id>
+  loom.sh tend <stitch-id>
+  loom.sh release <stitch-id>
   loom.sh wait <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
   loom.sh loose-ends
+  loom.sh tending
   loom.sh waiting
   loom.sh next
   loom.sh status
@@ -23,6 +26,7 @@ notes:
   - child stitches are the decomposition of their parent
   - a stitch with no children is a loose end — the work ready now
   - .stitching means claimed; .waiting means blocked on something external
+  - .tending means a child-bearing stitch has a steward; children stay claimable
 USAGE
 }
 
@@ -48,7 +52,7 @@ validate_id() {
 strip_state_suffix() {
   local name="$1"
   local state
-  for state in stitching waiting; do
+  for state in stitching waiting tending; do
     name="${name%.$state}"
   done
   printf '%s\n' "$name"
@@ -57,7 +61,7 @@ strip_state_suffix() {
 state_of_name() {
   local name="$1"
   local state
-  for state in stitching waiting; do
+  for state in stitching waiting tending; do
     if [[ "$name" == *".$state" ]]; then
       printf '%s\n' "$state"
       return 0
@@ -70,6 +74,7 @@ state_label() {
   case "$1" in
     stitching) printf 'claimed\n' ;;
     waiting) printf 'waiting\n' ;;
+    tending) printf 'tended\n' ;;
     plain) printf 'loose end\n' ;;
   esac
 }
@@ -106,10 +111,19 @@ set_stitch_state() {
     return 0
   fi
 
+  if [[ "$current" == tending ]]; then
+    die "'$id' is tended. release it before you $action it."
+  fi
+
   case "$scope" in
     loose)
       if has_child_dirs "$existing"; then
         die "'$id' is not a loose end — it has children. only loose ends can $action."
+      fi
+      ;;
+    parent)
+      if ! has_child_dirs "$existing"; then
+        die "'$id' has no children. only child-bearing stitches can $action."
       fi
       ;;
     *)
@@ -129,7 +143,7 @@ find_stitch_anywhere() {
   local base="$2"
   find "$base" \
     -type d \
-    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" \) \
+    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" -o -name "$id.tending" \) \
     -print
 }
 
@@ -203,7 +217,7 @@ cmd_new() {
     parent_base="$(basename "$parent")"
     local parent_state
     parent_state="$(state_of_name "$parent_base")"
-    if [[ "$parent_state" != plain ]]; then
+    if [[ "$parent_state" != plain && "$parent_state" != tending ]]; then
       local parent_dir unsuffixed
       parent_dir="$(dirname "$parent")"
       unsuffixed="$parent_dir/$parent_id"
@@ -225,6 +239,40 @@ cmd_claim() {
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
   set_stitch_state "$id" stitching loose claim "already stitching" claimed
+}
+
+cmd_tend() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "tend requires <stitch-id>"
+  validate_id "$id"
+  set_stitch_state "$id" tending parent tend "already tending" "tending"
+}
+
+cmd_release() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "release requires <stitch-id>"
+  validate_id "$id"
+
+  local existing name current parent_dir dest
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  ensure_under_threads "$existing" "$id" release
+
+  name="$(basename "$existing")"
+  current="$(state_of_name "$name")"
+  if [[ "$current" == plain ]]; then
+    echo "already released: $id"
+    return 0
+  fi
+  [[ "$current" == tending ]] || die "'$id' is not tended"
+
+  parent_dir="$(dirname "$existing")"
+  dest="$parent_dir/$id"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "released $id"
 }
 
 cmd_tie() {
@@ -351,6 +399,10 @@ list_waiting() {
   list_by_state waiting
 }
 
+list_tending() {
+  list_by_state tending
+}
+
 list_by_state() {
   local state="$1" scope="${2:-any}"
   local maxdepth=()
@@ -399,6 +451,16 @@ cmd_status() {
   fi
 
   echo
+  echo "🪡 tending (stewardship; children remain claimable)"
+  local tending
+  tending="$(list_tending)"
+  if [[ -n "$tending" ]]; then
+    printf '%s\n' "$tending" | sed 's/^/- /'
+  else
+    echo "(none)"
+  fi
+
+  echo
   echo "⏳ waiting"
   local waiting
   waiting="$(list_waiting)"
@@ -433,6 +495,11 @@ cmd_loose_ends() {
 cmd_waiting() {
   require_loom
   list_waiting
+}
+
+cmd_tending() {
+  require_loom
+  list_tending
 }
 
 cmd_next() {
@@ -531,6 +598,14 @@ main() {
       shift
       cmd_claim "$@"
       ;;
+    tend)
+      shift
+      cmd_tend "$@"
+      ;;
+    release)
+      shift
+      cmd_release "$@"
+      ;;
     wait)
       shift
       cmd_wait "$@"
@@ -550,6 +625,10 @@ main() {
     waiting)
       shift
       cmd_waiting "$@"
+      ;;
+    tending)
+      shift
+      cmd_tending "$@"
       ;;
     next)
       shift
