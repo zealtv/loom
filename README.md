@@ -85,7 +85,7 @@ After the final child is tied or dropped, a tended parent becomes childless. Eit
 
 ## Agent loop
 
-1. Run `./loom.sh next` (or `./loom.sh loose-ends` to see all of them). Loose ends are listed alphanumerically — if order matters, name stitches in the order you want them taken.
+1. Run `./loom.sh next` (or `./loom.sh loose-ends` to see all of them). Loose ends sort lexically by path — the top of the list is the priority queue, so keep it ordered (see **Ordering**).
 2. Claim it: `./loom.sh claim <stitch-id>`.
 3. Read its `instructions.md`. Ask: *what is the next concrete action?*
 4. Decide:
@@ -104,7 +104,19 @@ Siblings are parallel. A parent waits for its children.
 
 To express *A must happen before B*: make B the parent and place A inside it as a child. A must be tied before B can be tied.
 
-When two siblings both need to happen, name them so they sort in the order you want them taken. Loose ends are listed alphanumerically.
+When two siblings both need to happen, name them so they sort in the order you want them taken.
+
+## Ordering
+
+`loose-ends` and `next` sort **full paths, lexically**. Names are the only priority mechanism — there is no other ordering state. To make `next` serve work in the order you intend:
+
+* Prefix names with numbers: `1-fetch/`, `2-parse/`.
+* **Zero-pad any level that may pass nine** (`01-` … `13-`) — otherwise `10-` sorts before `2-`.
+* Priority **across threads** works the same way: prefix the goal stitches themselves. An unprefixed loom is served alphabetically, which is rarely the priority you meant.
+* A parent's prefix dominates its children: `01-goal/2-child` sorts before `02-goal/1-child`.
+* To reprioritise, rename (`mv` — the filesystem is the protocol), then fix any references to the old names in `instructions.md` prose.
+
+Unnumbered siblings mean *any order is fine*. If you find yourself explaining priority in prose instead of encoding it in names, encode it in names.
 
 ## Artifacts
 
