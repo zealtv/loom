@@ -231,6 +231,7 @@ cmd_new() {
   local created
   created="$(create_stitch_dir "$target_parent" "$id")"
   echo "new $created"
+  echo "next: read, then edit $created/instructions.md (agent harnesses refuse to overwrite unread files)"
 }
 
 cmd_claim() {
@@ -553,6 +554,9 @@ cmd_drop() {
   } > "$reason_file"
 
   echo "dropped $canonical"
+  if (( $# == 0 )); then
+    echo "next: read, then edit $reason_file (agent harnesses refuse to overwrite unread files)"
+  fi
 }
 
 sweep_dir() {
