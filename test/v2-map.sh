@@ -24,6 +24,7 @@ mkdir -p \
 : > "$TEST_REPO/.loom/threads/release/package/needs/docs"
 : > "$TEST_REPO/.loom/threads/release/broken/needs/missing-id"
 : > "$TEST_REPO/.loom/threads/release/cycle-a/needs/cycle-b"
+: > "$TEST_REPO/.loom/threads/release/cycle-a/needs/cycle-a"
 : > "$TEST_REPO/.loom/threads/release/cycle-b/needs/cycle-a"
 printf '# opaque\n' > \
   "$TEST_REPO/.loom/threads/release/notes/deep/instructions.md"
@@ -47,12 +48,29 @@ mkdir -p "$TEST_REPO/.loom/legacy-v1/tied/old"
 printf '# old\n' > \
   "$TEST_REPO/.loom/legacy-v1/tied/old/instructions.md"
 
+# Pin chronology, including offsets whose lexical order differs from instant
+# order. The legacy item deliberately has no completed-at.
+printf '2026-01-01T10:00:00+10:00\n' > \
+  "$TEST_REPO/.loom/threads/release.tending/design.tied/completed-at"
+printf '2025-12-31T20:30:00-04:00\n' > \
+  "$TEST_REPO/.loom/threads/release.tending/discarded.dropped/completed-at"
+printf '2025-01-01T00:00:00+00:00\n' > \
+  "$TEST_REPO/.loom/dropped/abandoned/completed-at"
+printf '2026-01-01T00:15:00+00:00\n' > \
+  "$TEST_REPO/.loom/tied/completed/completed-at"
+
 before_manifest="$(
   find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
 )"
-json_one="$("$LOOM" map --json 2>/dev/null || true)"
-json_two="$("$LOOM" map --json 2>/dev/null || true)"
-plain_map="$("$LOOM" map 2>/dev/null || true)"
+if json_one="$("$LOOM" map --json 2>/dev/null)"; then
+  fail "JSON map should share status health for broken dependencies and cycles"
+fi
+if json_two="$("$LOOM" map --json 2>/dev/null)"; then
+  fail "repeated JSON map unexpectedly reported healthy"
+fi
+if plain_map="$("$LOOM" map 2>/dev/null)"; then
+  fail "plain map should share status health for broken dependencies and cycles"
+fi
 after_manifest="$(
   find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
 )"
@@ -102,12 +120,50 @@ assert by_id["release"]["state"] == "tending"
 assert by_id["old"]["legacy"] is True
 assert by_id["old"]["completed_at"] is None
 assert by_id["package"]["queue_position"] == 1
+assert doc["frontier"] == ["docs"], doc["frontier"]
+assert doc["recently_completed"][:3] == [
+    "discarded", "completed", "design"
+], doc["recently_completed"]
+assert doc["recently_completed"][-1] == "old"
 assert any(edge["reason"] == "missing" for edge in doc["dependency_edges"])
+assert any(edge["reason"] == "invalid" for edge in doc["dependency_edges"])
 assert any(set(cycle) == {"cycle-a", "cycle-b"} for cycle in doc["cycles"])
 assert all("deep" != stitch["id"] for stitch in doc["stitches"])
 PY
 else
   echo "NOTE: python3 unavailable; detailed map schema assertions skipped"
+fi
+
+# Loom roots are user paths, unlike constrained stitch IDs. Exercise JSON
+# escaping for the path characters most likely to break a hand serializer.
+special_repo="$TEST_TMP/map \"quoted\" \\ root"
+mv "$TEST_REPO" "$special_repo"
+TEST_REPO="$special_repo"
+LOOM="$TEST_REPO/.loom/loom.sh"
+special_json="$("$LOOM" map --json 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$special_json" EXPECTED_ROOT="$TEST_REPO/.loom" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+assert doc["loom_root"] == os.environ["EXPECTED_ROOT"]
+PY
+fi
+
+# A healthy map exits zero and carries no diagnostics.
+new_test_loom
+"$LOOM" new ready >/dev/null
+healthy_json="$("$LOOM" map --json)"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$healthy_json" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+assert doc["frontier"] == ["ready"]
+assert doc["diagnostics"] == []
+PY
 fi
 
 echo "v2 map: ok"

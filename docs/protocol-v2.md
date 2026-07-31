@@ -342,7 +342,9 @@ Plain `map` has four deterministic sections:
 
 It is readable without ANSI control sequences. Missing legacy timestamps sort
 after authoritative timestamps and then by ID; they are labelled unknown,
-not guessed.
+not guessed. Authoritative timestamps are ordered as instants after applying
+their numeric UTC offsets. Equal instants use bytewise stitch ID as the
+deterministic tie-break.
 
 `map --json` emits one JSON object with this schema:
 

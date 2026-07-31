@@ -24,6 +24,7 @@ usage:
   loom.sh waiting
   loom.sh next
   loom.sh status
+  loom.sh map [--json]
   loom.sh migrate-v2 [--dry-run|--rollback]
   loom.sh sweep [days]
 
@@ -200,10 +201,15 @@ EDGE_STATES=()
 EDGE_CAUSES=()
 declare -A INDEX_COUNT=()
 declare -A INDEX_PATH=()
+declare -A INDEX_RELATIVE=()
 declare -A INDEX_STATE=()
 declare -A INDEX_DIRECT_STATE=()
 declare -A INDEX_ROOT=()
 declare -A INDEX_PARENT=()
+declare -A INDEX_TRAY=()
+declare -A INDEX_ARCHIVED=()
+declare -A INDEX_LEGACY=()
+declare -A INDEX_COMPLETED_AT=()
 declare -A INDEX_ANCESTORS=()
 declare -A INDEX_WAITING_ANCESTOR=()
 declare -A INDEX_TERMINAL_ANCESTOR=()
@@ -227,10 +233,15 @@ reset_index() {
   EDGE_CAUSES=()
   INDEX_COUNT=()
   INDEX_PATH=()
+  INDEX_RELATIVE=()
   INDEX_STATE=()
   INDEX_DIRECT_STATE=()
   INDEX_ROOT=()
   INDEX_PARENT=()
+  INDEX_TRAY=()
+  INDEX_ARCHIVED=()
+  INDEX_LEGACY=()
+  INDEX_COMPLETED_AT=()
   INDEX_ANCESTORS=()
   INDEX_WAITING_ANCESTOR=()
   INDEX_TERMINAL_ANCESTOR=()
@@ -425,6 +436,7 @@ index_detect_cycles() {
 build_index() {
   reset_index
   local dir name id direct state relative root parent ancestors cursor
+  local tray archived legacy completed_at completed_raw
   local immediate_parent waiting_ancestor terminal_ancestor
   local all_paths=()
 
@@ -444,8 +456,40 @@ build_index() {
       direct="$(state_of_name "$name")"
       state="$(index_effective_state "$dir" "$direct")"
       INDEX_PATH["$id"]="$dir"
+      INDEX_RELATIVE["$id"]="$relative"
       INDEX_DIRECT_STATE["$id"]="$direct"
       INDEX_STATE["$id"]="$state"
+
+      archived=false
+      legacy=false
+      case "$relative" in
+        threads/*) tray=threads ;;
+        tied/*) tray=tied; archived=true ;;
+        dropped/*) tray=dropped; archived=true ;;
+        legacy-v1/tied/*) tray=legacy-tied; archived=true; legacy=true ;;
+        legacy-v1/dropped/*) tray=legacy-dropped; archived=true; legacy=true ;;
+        *) tray=threads ;;
+      esac
+      INDEX_TRAY["$id"]="$tray"
+      INDEX_ARCHIVED["$id"]="$archived"
+      INDEX_LEGACY["$id"]="$legacy"
+
+      completed_at=""
+      if [[ -e "$dir/completed-at" || -L "$dir/completed-at" ]]; then
+        if [[ ! -f "$dir/completed-at" || -L "$dir/completed-at" ]]; then
+          INDEX_ERRORS+=("invalid completed-at for '$id': expected a regular file")
+          INDEX_INVALID["$id"]=1
+        else
+          completed_raw="$(cat "$dir/completed-at"; printf x)"
+          if [[ "$completed_raw" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2})$'\n'x$ ]]; then
+            completed_at="${BASH_REMATCH[1]}"
+          else
+            INDEX_ERRORS+=("invalid completed-at for '$id': expected one ISO-8601 seconds line")
+            INDEX_INVALID["$id"]=1
+          fi
+        fi
+      fi
+      INDEX_COMPLETED_AT["$id"]="$completed_at"
 
       cursor="$dir"
       ancestors=""
@@ -537,8 +581,9 @@ build_index() {
       if [[ "$target" == "$id" ]]; then
         INDEX_ERRORS+=("invalid self-dependency '$id -> $target'")
         INDEX_INVALID["$id"]=1
-      fi
-      if [[ "$target_count" == 0 ]]; then
+        edge_state=broken
+        cause=invalid
+      elif [[ "$target_count" == 0 ]]; then
         edge_state=broken
         cause=missing
       elif [[ "$target_count" != 1 ]]; then
@@ -1034,6 +1079,15 @@ list_goals() {
 
 list_loose_ends() {
   ensure_index
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    printf '%s\n' "${INDEX_PATH[$id]#$LOOM_DIR/threads/}"
+  done < <(list_ready_ids)
+}
+
+list_ready_ids() {
+  ensure_index
   local dir id
   declare -A emitted=()
 
@@ -1041,8 +1095,7 @@ list_loose_ends() {
     [[ -z "${emitted[$id]:-}" ]] || continue
     is_valid_id "$id" || continue
     if is_effectively_ready "$id"; then
-      dir="${INDEX_PATH[$id]}"
-      printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+      printf '%s\n' "$id"
       emitted["$id"]=1
     fi
   done
@@ -1051,7 +1104,7 @@ list_loose_ends() {
     [[ -n "$dir" ]] || continue
     id="$(strip_state_suffix "$(basename "$dir")")"
     if [[ -z "${emitted[$id]:-}" ]] && is_effectively_ready "$id"; then
-      printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+      printf '%s\n' "$id"
     fi
   done < <(walk_recognized "$LOOM_DIR/threads")
 }
@@ -1114,6 +1167,481 @@ count_entries() {
     count=$((count + 1))
   done < <(recognized_children "$dir")
   printf '%s\n' "$count"
+}
+
+json_string() {
+  local value="$1" output="" char code i
+  for (( i=0; i<${#value}; i++ )); do
+    char="${value:i:1}"
+    case "$char" in
+      '"') output+='\"' ;;
+      \\) output+='\\' ;;
+      $'\b') output+='\b' ;;
+      $'\f') output+='\f' ;;
+      $'\n') output+='\n' ;;
+      $'\r') output+='\r' ;;
+      $'\t') output+='\t' ;;
+      *)
+        printf -v code '%d' "'$char"
+        if (( code < 32 )); then
+          printf -v char '\\u%04x' "$code"
+        fi
+        output+="$char"
+        ;;
+    esac
+  done
+  printf '"%s"' "$output"
+}
+
+json_nullable_string() {
+  if [[ -n "$1" ]]; then
+    json_string "$1"
+  else
+    printf 'null'
+  fi
+}
+
+map_ids_by_path() {
+  local id
+  for id in "${!INDEX_PATH[@]}"; do
+    [[ "${INDEX_COUNT[$id]:-0}" == 1 ]] || continue
+    printf '%s\t%s\n' "${INDEX_RELATIVE[$id]}" "$id"
+  done | sort -t $'\t' -k1,1 | cut -f2
+}
+
+map_recent_ids() {
+  local id state timestamp
+  {
+    for id in "${!INDEX_PATH[@]}"; do
+      [[ "${INDEX_COUNT[$id]:-0}" == 1 ]] || continue
+      state="${INDEX_STATE[$id]}"
+      [[ "$state" == tied || "$state" == dropped ]] || continue
+      timestamp="${INDEX_COMPLETED_AT[$id]:-}"
+      if [[ -n "$timestamp" ]]; then
+        printf '0\t%s\t%s\n' "$timestamp" "$id"
+      else
+        printf '1\t\t%s\n' "$id"
+      fi
+    done
+  } | awk -F '\t' '
+    function epoch(value,    year, month, day, hour, minute, second,
+                                  offset_sign, offset_hour, offset_minute,
+                                  era, year_of_era, day_of_year, day_of_era,
+                                  days, offset) {
+      year = substr(value, 1, 4) + 0
+      month = substr(value, 6, 2) + 0
+      day = substr(value, 9, 2) + 0
+      hour = substr(value, 12, 2) + 0
+      minute = substr(value, 15, 2) + 0
+      second = substr(value, 18, 2) + 0
+      offset_sign = substr(value, 20, 1)
+      offset_hour = substr(value, 21, 2) + 0
+      offset_minute = substr(value, 24, 2) + 0
+
+      if (month <= 2)
+        year--
+      era = int(year / 400)
+      year_of_era = year - era * 400
+      day_of_year = int((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1
+      day_of_era = year_of_era * 365 + int(year_of_era / 4) - int(year_of_era / 100) + day_of_year
+      days = era * 146097 + day_of_era - 719468
+      offset = (offset_hour * 60 + offset_minute) * 60
+      if (offset_sign == "-")
+        offset = -offset
+      return days * 86400 + hour * 3600 + minute * 60 + second - offset
+    }
+    $1 == 0 { printf "0\t%.0f\t%s\n", epoch($2), $3 }
+    $1 == 1 { printf "1\t0\t%s\n", $3 }
+  ' | sort -t $'\t' -k1,1n -k2,2nr -k3,3 | cut -f3
+}
+
+map_health() {
+  local i
+  (( ${#INDEX_ERRORS[@]} == 0 && ${#QUEUE_ERRORS[@]} == 0 &&
+     ${#INDEX_CYCLES[@]} == 0 )) || return 1
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_STATES[$i]}" != broken ]] || return 1
+  done
+  return 0
+}
+
+map_stitch_cycle() {
+  local id="$1" cycle member
+  local members=()
+  for cycle in "${INDEX_CYCLES[@]}"; do
+    IFS=',' read -ra members <<< "$cycle"
+    for member in "${members[@]}"; do
+      if [[ "$member" == "$id" ]]; then
+        printf '%s\n' "$cycle"
+        return
+      fi
+    done
+  done
+}
+
+map_emit_id_array() {
+  local values=("$@") value first=true
+  printf '['
+  for value in "${values[@]}"; do
+    [[ -n "$value" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    json_string "$value"
+    first=false
+  done
+  printf ']'
+}
+
+map_emit_csv_id_array() {
+  local csv="$1"
+  local values=()
+  [[ -z "$csv" ]] || IFS=',' read -ra values <<< "$csv"
+  map_emit_id_array "${values[@]}"
+}
+
+map_child_ids() {
+  local parent="$1" id
+  for id in "${!INDEX_PARENT[@]}"; do
+    [[ "${INDEX_COUNT[$id]:-0}" == 1 &&
+       "${INDEX_PARENT[$id]:-}" == "$parent" ]] || continue
+    printf '%s\n' "$id"
+  done | sort
+}
+
+map_edge_indexes_for() {
+  local dependent="$1" i
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_DEPENDENTS[$i]}" == "$dependent" ]] || continue
+    printf '%s\t%s\n' "${EDGE_TARGETS[$i]}" "$i"
+  done | sort -t $'\t' -k1,1 -k2,2n | cut -f2
+}
+
+map_emit_dependency() {
+  local i="$1" cause="${EDGE_CAUSES[$1]}"
+  printf '{"from":'
+  json_string "${EDGE_DEPENDENTS[$i]}"
+  printf ',"to":'
+  json_string "${EDGE_TARGETS[$i]}"
+  printf ',"status":'
+  json_string "${EDGE_STATES[$i]}"
+  printf ',"reason":'
+  json_nullable_string "$cause"
+  printf '}'
+}
+
+map_emit_stitch_dependencies() {
+  local id="$1" i first=true
+  printf '['
+  while IFS= read -r i; do
+    [[ -n "$i" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_dependency "$i"
+    first=false
+  done < <(map_edge_indexes_for "$id")
+  printf ']'
+}
+
+map_emit_stitch() {
+  local id="$1" parent="${INDEX_PARENT[$1]:-}"
+  local completed="${INDEX_COMPLETED_AT[$1]:-}"
+  local cycle ready=false waiting=false queue_position="${QUEUE_POSITION[$1]:-}"
+  local children=()
+  is_effectively_ready "$id" && ready=true
+  [[ -n "${INDEX_WAITING_ANCESTOR[$id]:-}" ]] && waiting=true
+  cycle="$(map_stitch_cycle "$id")"
+  mapfile -t children < <(map_child_ids "$id")
+
+  printf '{"id":'; json_string "$id"
+  printf ',"root_id":'; json_string "${INDEX_ROOT[$id]}"
+  printf ',"parent_id":'; json_nullable_string "$parent"
+  printf ',"path":'; json_string "${INDEX_RELATIVE[$id]}"
+  printf ',"tray":'; json_string "${INDEX_TRAY[$id]}"
+  printf ',"state":'; json_string "${INDEX_STATE[$id]}"
+  printf ',"ready":%s' "$ready"
+  printf ',"waiting_inherited":%s' "$waiting"
+  if [[ -n "$queue_position" ]]; then
+    printf ',"queue_position":%s' "$queue_position"
+  else
+    printf ',"queue_position":null'
+  fi
+  printf ',"completed_at":'; json_nullable_string "$completed"
+  printf ',"archived":%s' "${INDEX_ARCHIVED[$id]}"
+  printf ',"legacy":%s' "${INDEX_LEGACY[$id]}"
+  printf ',"children":'; map_emit_id_array "${children[@]}"
+  printf ',"dependencies":'; map_emit_stitch_dependencies "$id"
+  printf ',"cycle":'; map_emit_csv_id_array "$cycle"
+  printf '}'
+}
+
+map_emit_diagnostic() {
+  local severity="$1" code="$2" message="$3"
+  local stitch_id="${4:-}" target_id="${5:-}"
+  printf '{"severity":'; json_string "$severity"
+  printf ',"code":'; json_string "$code"
+  printf ',"message":'; json_string "$message"
+  printf ',"stitch_id":'; json_nullable_string "$stitch_id"
+  printf ',"target_id":'; json_nullable_string "$target_id"
+  printf '}'
+}
+
+map_emit_diagnostics() {
+  local first=true i message cycle
+  printf '['
+
+  while IFS=$'\t' read -r _ i; do
+    [[ -n "$i" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_diagnostic error broken_dependency \
+      "broken dependency '${EDGE_DEPENDENTS[$i]} -> ${EDGE_TARGETS[$i]}' (${EDGE_CAUSES[$i]})" \
+      "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}"
+    first=false
+  done < <(
+    for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+      [[ "${EDGE_STATES[$i]}" == broken ]] || continue
+      printf '%s/%s\t%s\n' "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}" "$i"
+    done | sort
+  )
+
+  for cycle in "${INDEX_CYCLES[@]}"; do
+    [[ "$first" == true ]] || printf ','
+    map_emit_diagnostic error dependency_cycle \
+      "dependency cycle: ${cycle//,/, }"
+    first=false
+  done
+
+  while IFS= read -r message; do
+    [[ -n "$message" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_diagnostic error queue_error "$message"
+    first=false
+  done < <(printf '%s\n' "${QUEUE_ERRORS[@]}" | sort)
+
+  while IFS= read -r message; do
+    [[ -n "$message" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_diagnostic error structural_error "$message"
+    first=false
+  done < <(printf '%s\n' "${INDEX_ERRORS[@]}" | sort)
+
+  printf ']'
+}
+
+map_emit_json() {
+  local ids=() ready=() recent=() id parent child first i cycle
+  mapfile -t ids < <(map_ids_by_path)
+  mapfile -t ready < <(list_ready_ids)
+  mapfile -t recent < <(map_recent_ids)
+
+  printf '{"schema_version":1,"format_version":2,"loom_root":'
+  json_string "$LOOM_DIR"
+
+  printf ',"stitches":['
+  first=true
+  for id in "${ids[@]}"; do
+    [[ "$first" == true ]] || printf ','
+    map_emit_stitch "$id"
+    first=false
+  done
+  printf ']'
+
+  printf ',"decomposition_edges":['
+  first=true
+  while IFS=$'\t' read -r parent child; do
+    [[ -n "$parent" && -n "$child" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    printf '{"parent":'; json_string "$parent"
+    printf ',"child":'; json_string "$child"
+    printf '}'
+    first=false
+  done < <(
+    for id in "${ids[@]}"; do
+      parent="${INDEX_PARENT[$id]:-}"
+      [[ -n "$parent" ]] && printf '%s\t%s\n' "$parent" "$id"
+    done | sort -t $'\t' -k1,1 -k2,2
+  )
+  printf ']'
+
+  printf ',"dependency_edges":['
+  first=true
+  while IFS=$'\t' read -r _ i; do
+    [[ -n "$i" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_dependency "$i"
+    first=false
+  done < <(
+    for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+      printf '%s/%s\t%s\n' "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}" "$i"
+    done | sort
+  )
+  printf ']'
+
+  printf ',"cycles":['
+  first=true
+  for cycle in "${INDEX_CYCLES[@]}"; do
+    [[ "$first" == true ]] || printf ','
+    map_emit_csv_id_array "$cycle"
+    first=false
+  done
+  printf ']'
+
+  printf ',"frontier":'; map_emit_id_array "${ready[@]}"
+  printf ',"recently_completed":'; map_emit_id_array "${recent[@]}"
+  printf ',"diagnostics":'; map_emit_diagnostics
+  printf '}\n'
+}
+
+map_block_reason() {
+  local id="$1" i ancestor
+  if [[ -n "${INDEX_WAITING_ANCESTOR[$id]:-}" ]]; then
+    ancestor="$(strip_state_suffix "$(basename "${INDEX_WAITING_ANCESTOR[$id]}")")"
+    printf 'waiting under %s\n' "$ancestor"
+    return
+  fi
+  case "${INDEX_DIRECT_STATE[$id]}" in
+    stitching) printf 'claimed\n'; return ;;
+    waiting) printf 'waiting\n'; return ;;
+    tending) printf 'tended\n'; return ;;
+  esac
+  if [[ -n "${INDEX_CYCLIC[$id]:-}" ]]; then
+    printf 'dependency cycle\n'
+    return
+  fi
+  if [[ -n "${INDEX_INVALID[$id]:-}" ]]; then
+    printf 'invalid structure\n'
+    return
+  fi
+  if (( ${INDEX_UNRESOLVED_CHILDREN[$id]:-0} > 0 )); then
+    printf '%s unresolved child stitch(es)\n' \
+      "${INDEX_UNRESOLVED_CHILDREN[$id]}"
+    return
+  fi
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_DEPENDENTS[$i]}" == "$id" &&
+       "${EDGE_STATES[$i]}" != satisfied ]] || continue
+    if [[ "${EDGE_STATES[$i]}" == broken ]]; then
+      printf 'needs %s (%s)\n' "${EDGE_TARGETS[$i]}" "${EDGE_CAUSES[$i]}"
+    else
+      printf 'needs %s\n' "${EDGE_TARGETS[$i]}"
+    fi
+    return
+  done
+  printf 'not ready\n'
+}
+
+map_tree_children() {
+  local parent="$1" tray="$2" id
+  for id in "${!INDEX_PATH[@]}"; do
+    [[ "${INDEX_COUNT[$id]:-0}" == 1 &&
+       "${INDEX_PARENT[$id]:-}" == "$parent" &&
+       "${INDEX_TRAY[$id]}" == "$tray" ]] || continue
+    printf '%s\t%s\n' "${INDEX_RELATIVE[$id]}" "$id"
+  done | sort -t $'\t' -k1,1 | cut -f2
+}
+
+map_has_tray() {
+  local tray="$1" id
+  for id in "${!INDEX_TRAY[@]}"; do
+    [[ "${INDEX_TRAY[$id]}" != "$tray" ]] || return 0
+  done
+  return 1
+}
+
+map_print_tree() {
+  local parent="$1" tray="$2" prefix="${3:-}" id state tag
+  local entries=()
+  mapfile -t entries < <(map_tree_children "$parent" "$tray")
+
+  local count="${#entries[@]}" i=0 branch child_prefix
+  for id in "${entries[@]}"; do
+    i=$((i + 1))
+    branch="├──"; child_prefix="│   "
+    if (( i == count )); then
+      branch="└──"; child_prefix="    "
+    fi
+    state="${INDEX_STATE[$id]}"
+    tag=" [$state]"
+    if is_effectively_ready "$id"; then
+      tag=" [ready]"
+    elif [[ -n "${INDEX_WAITING_ANCESTOR[$id]:-}" ]]; then
+      tag=" [waiting inherited]"
+    fi
+    printf '%s%s %s%s\n' "$prefix" "$branch" "$id" "$tag"
+    map_print_tree "$id" "$tray" "$prefix$child_prefix"
+  done
+}
+
+map_emit_plain() {
+  local recent=() ready=() id timestamp state has_coming=false
+  mapfile -t recent < <(map_recent_ids)
+  mapfile -t ready < <(list_ready_ids)
+
+  echo "recently completed"
+  if (( ${#recent[@]} == 0 )); then
+    echo "(none)"
+  else
+    for id in "${recent[@]}"; do
+      timestamp="${INDEX_COMPLETED_AT[$id]:-unknown}"
+      printf -- '- %s  %s  %s\n' "$timestamp" "$id" "${INDEX_STATE[$id]}"
+    done
+  fi
+
+  echo
+  echo "current frontier"
+  if (( ${#ready[@]} == 0 )); then
+    echo "(none)"
+  else
+    for id in "${ready[@]}"; do
+      if [[ -n "${QUEUE_POSITION[$id]:-}" ]]; then
+        printf -- '- %s  (queue %s)\n' "$id" "${QUEUE_POSITION[$id]}"
+      else
+        printf -- '- %s\n' "$id"
+      fi
+    done
+  fi
+
+  echo
+  echo "coming / blocked"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ "${INDEX_TRAY[$id]}" == threads ]] || continue
+    state="${INDEX_STATE[$id]}"
+    [[ "$state" != tied && "$state" != dropped &&
+       "$state" != abandoned ]] || continue
+    is_effectively_ready "$id" && continue
+    printf -- '- %s  (%s)\n' "$id" "$(map_block_reason "$id")"
+    has_coming=true
+  done < <(map_ids_by_path)
+  [[ "$has_coming" == true ]] || echo "(none)"
+
+  echo
+  echo "decomposition tree"
+  echo "active"
+  map_print_tree "" threads
+  echo "tied archives"
+  map_print_tree "" tied
+  echo "dropped archives"
+  map_print_tree "" dropped
+  if map_has_tray legacy-tied || map_has_tray legacy-dropped; then
+    echo "legacy v1"
+    map_print_tree "" legacy-tied
+    map_print_tree "" legacy-dropped
+  fi
+}
+
+cmd_map() {
+  require_loom
+  [[ "$(format_version_state)" == v2 ]] ||
+    die "map requires a format v2 loom (run migrate-v2 first)"
+  local mode="${1:-}"
+  [[ -z "$mode" || "$mode" == --json ]] ||
+    die "map accepts only --json"
+  [[ $# -le 1 ]] || die "map accepts only --json"
+  build_index
+  if [[ "$mode" == --json ]]; then
+    map_emit_json
+  else
+    map_emit_plain
+  fi
+  map_health
 }
 
 cmd_status() {
@@ -2126,6 +2654,10 @@ main() {
     status)
       shift
       cmd_status "$@"
+      ;;
+    map)
+      shift
+      cmd_map "$@"
       ;;
     migrate-v2)
       shift

@@ -166,6 +166,18 @@ prevents later ready work. Unqueued ready stitches follow in lexical path
 order. Reprioritising therefore never requires renaming an ID or repairing
 dependency references.
 
+## Read-only map
+
+`loom.sh map` gives a compact human view of recently completed work, the
+current ready frontier, coming or blocked work, and the complete decomposition
+tree. `loom.sh map --json` emits the deterministic schema documented in
+[`docs/protocol-v2.md`](docs/protocol-v2.md).
+
+The JSON snapshot is the sole supported integration boundary for a future
+browser, TUI, or other viewer. Viewers derive their display from that snapshot
+and perform mutations by invoking Loom commands; they never edit or maintain a
+second state model. Both map forms are strictly read-only.
+
 ## Artifacts
 
 Notes, logs, decisions, intermediate files — put them inside the stitch
@@ -266,6 +278,7 @@ It can contain:
 ./loom.sh waiting
 ./loom.sh next
 ./loom.sh status
+./loom.sh map [--json]
 ./loom.sh migrate-v2 [--dry-run|--rollback]
 ./loom.sh sweep [days]   # remove whole goal archives older than N days (default 14)
 ```
