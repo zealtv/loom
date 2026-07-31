@@ -14,7 +14,15 @@ new_test_loom
 assert_dir "$TEST_REPO/.loom/threads/goal/parked.waiting"
 assert_eq "goal/sibling" "$("$LOOM" loose-ends)" \
   "inherited waiting must hide descendants"
+assert_eq "goal/sibling" "$("$LOOM" next)" \
+  "a ready sibling must remain next"
 assert_fails_with "resume parked" "$LOOM" claim parked
+assert_fails_with "resume parked" "$LOOM" claim parked-leaf
+status_output="$("$LOOM" status)"
+assert_contains "$status_output" "parked.waiting (waiting)" \
+  "status waiting branch"
+assert_contains "$status_output" "parked-leaf (waiting inherited)" \
+  "status inherited waiting"
 
 "$LOOM" wait parked-leaf >/dev/null
 assert_fails_with "resume parked-leaf" "$LOOM" claim parked-leaf
@@ -23,6 +31,7 @@ assert_dir "$TEST_REPO/.loom/threads/goal/parked/parked-leaf.waiting"
 assert_eq "goal/parked/parked-leaf.waiting" "$("$LOOM" waiting)" \
   "resume must preserve explicitly waiting descendants"
 "$LOOM" resume parked-leaf >/dev/null
+assert_fails_with "not directly waiting" "$LOOM" resume parked-leaf
 "$LOOM" claim parked-leaf >/dev/null
 
 assert_fails_with "parked-leaf" "$LOOM" wait goal

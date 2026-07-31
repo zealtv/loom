@@ -11,6 +11,7 @@ usage:
   loom.sh tend <stitch-id>
   loom.sh release <stitch-id>
   loom.sh wait <stitch-id>
+  loom.sh resume <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
   loom.sh loose-ends
@@ -26,7 +27,7 @@ notes:
   - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
   - a stitch with no children is a loose end — the work ready now
-  - .stitching means claimed; .waiting means blocked on something external
+  - .stitching means claimed; .waiting explicitly parks a stitch and its subtree
   - .tending means a child-bearing stitch has a steward; children stay claimable
 USAGE
 }
@@ -132,6 +133,20 @@ has_terminal_ancestor() {
     case "$(state_of_name "$(basename "$parent")")" in
       tied|dropped) return 0 ;;
     esac
+    parent="$(dirname "$parent")"
+  done
+  return 1
+}
+
+has_waiting_ancestor() {
+  local dir="$1"
+  local parent
+  parent="$(dirname "$dir")"
+  while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
+    if [[ "$(state_of_name "$(basename "$parent")")" == waiting ]]; then
+      printf '%s\n' "$parent"
+      return 0
+    fi
     parent="$(dirname "$parent")"
   done
   return 1
@@ -327,6 +342,18 @@ cmd_claim() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
+
+  local existing waiting_ancestor waiting_id
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  if [[ "$(state_of_name "$(basename "$existing")")" == waiting ]]; then
+    die "'$id' is waiting. run 'loom resume $id' before claiming it."
+  fi
+  waiting_ancestor="$(has_waiting_ancestor "$existing" || true)"
+  if [[ -n "$waiting_ancestor" ]]; then
+    waiting_id="$(strip_state_suffix "$(basename "$waiting_ancestor")")"
+    die "'$id' is beneath waiting stitch '$waiting_id'. run 'loom resume $waiting_id' first."
+  fi
   set_stitch_state "$id" stitching loose claim "already stitching" claimed
 }
 
@@ -446,6 +473,7 @@ print_stitch_tree() {
   local dir="$1"
   local prefix="${2:-}"
   local abandoned="${3:-false}"
+  local waiting_inherited="${4:-false}"
   local entries=()
   local entry
   while IFS= read -r entry; do
@@ -469,20 +497,30 @@ print_stitch_tree() {
     local state
     state="$(state_of_name "$name")"
     local child_abandoned="$abandoned"
+    local child_waiting="$waiting_inherited"
     if [[ "$abandoned" == true ]]; then
       tag=" (abandoned)"
     elif [[ "$state" != plain ]]; then
       tag=" ($(state_label "$state"))"
       if [[ "$state" == dropped ]]; then
         child_abandoned=true
+      elif [[ "$state" == waiting ]]; then
+        child_waiting=true
       fi
+      if [[ "$waiting_inherited" == true && "$state" != waiting &&
+            "$state" != tied && "$state" != dropped ]]; then
+        tag="${tag%)}; waiting inherited)"
+      fi
+    elif [[ "$waiting_inherited" == true ]]; then
+      tag=" (waiting inherited)"
     elif has_unresolved_children "$entry"; then
       :
     else
       tag=" (loose end)"
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
-    print_stitch_tree "$entry" "$prefix$child_prefix" "$child_abandoned"
+    print_stitch_tree \
+      "$entry" "$prefix$child_prefix" "$child_abandoned" "$child_waiting"
   done
 }
 
@@ -514,6 +552,7 @@ list_loose_ends() {
     base="$(basename "$dir")"
     [[ "$(state_of_name "$base")" == plain ]] || continue
     has_terminal_ancestor "$dir" && continue
+    [[ -n "$(has_waiting_ancestor "$dir" || true)" ]] && continue
     if ! has_unresolved_children "$dir"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
@@ -675,7 +714,69 @@ cmd_wait() {
   local id="${1:-}"
   [[ -n "$id" ]] || die "wait requires <stitch-id>"
   validate_id "$id"
-  set_stitch_state "$id" waiting loose wait "already waiting" waiting
+
+  local existing current parent_dir dest descendant descendant_path descendant_id
+  local conflicts=()
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  ensure_under_threads "$existing" "$id" wait
+
+  current="$(state_of_name "$(basename "$existing")")"
+  if [[ "$current" == waiting ]]; then
+    echo "already waiting: $id"
+    return 0
+  fi
+  if [[ "$current" == tied || "$current" == dropped ]]; then
+    die "cannot wait terminal stitch '$id' ($current)"
+  fi
+  has_terminal_ancestor "$existing" &&
+    die "cannot wait abandoned stitch '$id' beneath a terminal ancestor"
+
+  while IFS= read -r descendant; do
+    [[ -n "$descendant" ]] || continue
+    [[ "$(state_of_name "$(basename "$descendant")")" == stitching ]] ||
+      continue
+    descendant_id="$(strip_state_suffix "$(basename "$descendant")")"
+    descendant_path="${descendant#$LOOM_DIR/threads/}"
+    conflicts+=("$descendant_id ($descendant_path)")
+  done < <(walk_recognized "$existing")
+
+  if (( ${#conflicts[@]} > 0 )); then
+    echo "error: cannot wait '$id' — claimed descendant stitches:" >&2
+    printf '  - %s\n' "${conflicts[@]}" >&2
+    echo "tie, drop, or otherwise relinquish each claim before waiting the subtree." >&2
+    exit 1
+  fi
+
+  parent_dir="$(dirname "$existing")"
+  dest="$parent_dir/$id.waiting"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "waiting $id"
+}
+
+cmd_resume() {
+  require_loom
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "resume requires <stitch-id>"
+  validate_id "$id"
+
+  local existing current parent_dir dest
+  existing="$(find_unique_stitch_anywhere "$id" || true)"
+  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  ensure_under_threads "$existing" "$id" resume
+  has_terminal_ancestor "$existing" &&
+    die "cannot resume abandoned stitch '$id' beneath a terminal ancestor"
+
+  current="$(state_of_name "$(basename "$existing")")"
+  [[ "$current" == waiting ]] ||
+    die "'$id' is not directly waiting"
+
+  parent_dir="$(dirname "$existing")"
+  dest="$parent_dir/$id"
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  mv "$existing" "$dest"
+  echo "resumed $id"
 }
 
 cmd_drop() {
@@ -789,6 +890,10 @@ main() {
     wait)
       shift
       cmd_wait "$@"
+      ;;
+    resume)
+      shift
+      cmd_resume "$@"
       ;;
     tie)
       shift

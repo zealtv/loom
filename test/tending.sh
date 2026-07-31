@@ -14,7 +14,6 @@ status_output="$("$LOOM" status)"
 grep -q -- "- parent.tending" <<<"$status_output" || fail "status did not show tended parent"
 assert_fails_with "has no children" "$LOOM" tend child-a
 assert_fails_with "tended" "$LOOM" claim parent
-assert_fails_with "tended" "$LOOM" wait parent
 assert_eq "parent.tending/child-a" "$("$LOOM" loose-ends)"
 assert_eq "parent.tending/child-a" "$("$LOOM" next)"
 
@@ -23,7 +22,6 @@ assert_eq "parent.tending/child-a" "$("$LOOM" next)"
 "$LOOM" claim child-a >/dev/null
 "$LOOM" wait child-b >/dev/null
 assert_fails_with "tended" "$LOOM" claim parent
-assert_fails_with "tended" "$LOOM" wait parent
 "$LOOM" tie child-a >/dev/null
 "$LOOM" drop child-b test >/dev/null
 

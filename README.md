@@ -63,7 +63,7 @@ A stitch is a directory with an `instructions.md` file.
 
 1. One stitch, one place.
 2. Claim by suffix: `stitch-001/` → `stitch-001.stitching/`. Only loose ends can be claimed.
-3. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch is a loose end blocked on something external.
+3. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch explicitly parks that stitch and its whole subtree.
 4. Tend by suffix: `parent/` → `parent.tending/`. A tended stitch has children and a visible steward; it does not lock its branch.
 5. Tie off in place: a child becomes `stitch-001.tied/`; a completed goal and
    its whole tree move to `tied/stitch-001/`. A stitch can only be tied off
@@ -80,15 +80,24 @@ The file system is the protocol.
 
 The `.stitching` suffix is a claim — *"this one is mine."* POSIX `mv` is atomic, so claims are race-free. Only loose ends are claimed; the claim moves down with the work as you split.
 
-The `.waiting` suffix marks a loose end blocked on something external — a build, a review, another person. Waiting stitches are excluded from `loose-ends` and `next`. To resume one, claim it again.
+The `.waiting` suffix explicitly parks a leaf, branch, or whole goal — for
+example while blocked on a build, a review, or another person. Waiting is
+inherited: every descendant beneath a waiting ancestor is excluded from
+`loose-ends` and `next`, while siblings outside that subtree remain available.
 
-Waiting belongs on loose ends, not parent stitches. To block a whole parent or thread, add a concrete blocker child and mark that child waiting, for example `vendor-approval.waiting/`.
+Resume a directly waiting stitch with `resume <stitch-id>`. Resuming removes
+only that stitch's `.waiting` suffix and leaves it unclaimed. It does not
+silently resume an explicitly waiting descendant; resume that descendant
+separately when appropriate. `claim` never resumes waiting work.
 
 ## Tending a branch
 
 The `.tending` suffix means *"I am stewarding this branch."* It is only for stitches with children. Stewardship is visible coordination, not an exclusive lock: loose-end children beneath a tended parent remain visible in `loose-ends` and `next`, and other workers may claim them normally.
 
-Use `tend <stitch-id>` to take stewardship and `release <stitch-id>` to return the parent to its plain state. Adding another child preserves the parent's `.tending` suffix. `.stitching` and `.waiting` remain leaf-only states.
+Use `tend <stitch-id>` to take stewardship and `release <stitch-id>` to return
+the parent to its plain state. Adding another child preserves the parent's
+`.tending` suffix. Waiting a tended branch ends its stewardship and parks the
+subtree without changing descendant state.
 
 After the final child is tied or dropped, a tended parent becomes childless. Either tie it directly if no final work remains, or release it and then claim it for final work. Claiming does not implicitly convert `.tending` to `.stitching`.
 
@@ -100,7 +109,7 @@ After the final child is tied or dropped, a tended parent becomes childless. Eit
 4. Decide:
    * the outcome is no longer wanted → **drop** with a reason
    * you can name the next action → **do it and tie off**
-   * the next step is blocked on something external → **wait** (excluded from loose ends until you claim it again)
+   * the next step or subtree is blocked on something external → **wait** (excluded from loose ends until explicitly resumed)
    * you can't yet name the next step → **split** into child stitches; the parent is unclaimed automatically, then claim one of the children
 
 For longer decomposed work, `tend` the parent to make stewardship visible while its child loose ends remain available.
@@ -159,6 +168,7 @@ It can contain:
 ./loom.sh tend <stitch-id>
 ./loom.sh release <stitch-id>
 ./loom.sh wait <stitch-id>
+./loom.sh resume <stitch-id>
 ./loom.sh tie <stitch-id>
 ./loom.sh drop <stitch-id> [reason...]
 ./loom.sh loose-ends
