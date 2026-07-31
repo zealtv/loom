@@ -174,6 +174,61 @@ contain deeper directories or files named `instructions.md`. Artifacts travel
 with retained terminal children and with the complete goal archive, leaving a
 durable record of what happened.
 
+## Migrating a v1 loom
+
+A deployed markerless loom stays v1 until an operator explicitly migrates it.
+`init`, `status`, `next`, install/update, and lifecycle commands never trigger
+migration. Lifecycle and queue mutations on a non-empty markerless loom stop
+with a migration hint.
+
+First inspect the complete plan:
+
+```sh
+./loom.sh migrate-v2 --dry-run
+```
+
+The dry run validates the source and prints every backup, move, and marker
+write without changing file bytes, paths, mtimes, or the format marker. Resolve
+every reported orphan reason, name collision, malformed archive, or ambiguous
+active directory before proceeding. V1 treated every directory under
+`threads/` as a stitch, so a directory without `instructions.md` cannot be
+silently reclassified during migration: either add instructions if it really
+is a stitch, or move it aside and restore it as v2 support material after the
+migration.
+
+Then migrate:
+
+```sh
+./loom.sh migrate-v2
+```
+
+Active `threads/` remain in place with their lifecycle suffixes and artifacts.
+Flat v1 history moves to `legacy-v1/tied/` and `legacy-v1/dropped/`; old
+`dropped/<id>.reason.md` sidecars move inside the corresponding legacy record
+as `reason.md`. Legacy records do not receive invented ancestry or
+`completed-at` values. The summary counts active and legacy records and prints
+warnings for top-level support entries retained unchanged.
+
+### Interrupted migration and rollback
+
+Before the first move, migration creates `.migrate-v2-staging/` containing an
+immutable plan, an atomic completed-step journal, and recoverable copies of
+every path it will move. If a run stops before `format-version` is committed,
+ordinary mutations remain blocked:
+
+```sh
+./loom.sh migrate-v2              # validate the journal and resume
+./loom.sh migrate-v2 --rollback   # restore the original markerless v1 paths
+```
+
+Rollback processes moves in reverse order, so an embedded dropped reason is
+restored before its containing directory. Keep the staging directory intact
+until one of these commands succeeds; it is the recovery material. If the v2
+marker was committed but final staging cleanup was interrupted, rerun
+`migrate-v2` to validate all destinations and finish cleanup. At that point
+rollback is intentionally unavailable because the loom is already declared
+v2.
+
 ## instructions.md
 
 `instructions.md` is the conventional file that tells a human or agent what a stitch is for.
@@ -211,6 +266,7 @@ It can contain:
 ./loom.sh waiting
 ./loom.sh next
 ./loom.sh status
+./loom.sh migrate-v2 [--dry-run|--rollback]
 ./loom.sh sweep [days]   # remove whole goal archives older than N days (default 14)
 ```
 
@@ -226,6 +282,6 @@ The runner preserves the current lifecycle coverage and prints a loud skip for
 each not-yet-implemented v2 stage. Set `LOOM_V2_STAGE=<stage-number>` while
 implementing a stage to enable its contract tests and all earlier stages.
 
-The frozen future-format contract is
-[`docs/protocol-v2.md`](docs/protocol-v2.md). Until those staged tests are
-enabled and implemented, the CLI behavior documented above remains v1.
+The frozen format contract is
+[`docs/protocol-v2.md`](docs/protocol-v2.md). The test runner stages later v2
+features independently while keeping every implemented stage covered.

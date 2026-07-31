@@ -24,6 +24,7 @@ usage:
   loom.sh waiting
   loom.sh next
   loom.sh status
+  loom.sh migrate-v2 [--dry-run|--rollback]
   loom.sh sweep [days]
 
 notes:
@@ -49,6 +50,58 @@ require_loom() {
   [[ "$(basename "$script_dir")" == ".loom" ]] || die "loom.sh must live inside a .loom/ directory"
   LOOM_DIR="$script_dir"
   REPO_ROOT="$(dirname "$LOOM_DIR")"
+}
+
+format_version_state() {
+  local marker="$LOOM_DIR/format-version"
+  if [[ ! -e "$marker" && ! -L "$marker" ]]; then
+    printf 'v1\n'
+  elif [[ ! -f "$marker" || -L "$marker" ]]; then
+    printf 'invalid\n'
+  elif [[ "$(cat "$marker"; printf x)" == $'2\nx' ]]; then
+    printf 'v2\n'
+  else
+    printf 'invalid\n'
+  fi
+}
+
+loom_has_tray_entries() {
+  local tray entry
+  for tray in threads tied dropped; do
+    [[ -d "$LOOM_DIR/$tray" ]] || continue
+    shopt -s nullglob dotglob
+    for entry in "$LOOM_DIR/$tray"/*; do
+      [[ "$(basename "$entry")" != .gitkeep ]] || continue
+      shopt -u nullglob dotglob
+      return 0
+    done
+    shopt -u nullglob dotglob
+  done
+  return 1
+}
+
+require_v2_mutation() {
+  local state
+  state="$(format_version_state)"
+  if [[ -e "$LOOM_DIR/.migrate-v2-staging" ||
+        -L "$LOOM_DIR/.migrate-v2-staging" ]]; then
+    if [[ "$state" == v2 ]]; then
+      die "v2 migration committed but staging cleanup remains; run 'loom.sh migrate-v2' to finish cleanup"
+    fi
+    die "unfinished v2 migration staging exists; run 'loom.sh migrate-v2' to resume or 'loom.sh migrate-v2 --rollback' to restore v1"
+  fi
+  case "$state" in
+    v2) ;;
+    v1)
+      if loom_has_tray_entries; then
+        die "markerless loom is format v1; inspect with 'loom.sh migrate-v2 --dry-run', then run 'loom.sh migrate-v2'"
+      fi
+      die "loom has no format marker; run 'loom.sh init' before changing it"
+      ;;
+    invalid)
+      die "invalid format-version marker (expected a regular file containing exactly '2')"
+      ;;
+  esac
 }
 
 is_valid_id() {
@@ -128,6 +181,10 @@ walk_all_stitches() {
   for tray in threads tied dropped; do
     [[ -d "$LOOM_DIR/$tray" ]] || continue
     walk_recognized "$LOOM_DIR/$tray"
+  done
+  for tray in tied dropped; do
+    [[ -d "$LOOM_DIR/legacy-v1/$tray" ]] || continue
+    recognized_children "$LOOM_DIR/legacy-v1/$tray"
   done
 }
 
@@ -236,6 +293,14 @@ index_effective_state() {
   fi
 
   case "$dir" in
+    "$LOOM_DIR/legacy-v1/tied"/*)
+      printf 'tied\n'
+      return
+      ;;
+    "$LOOM_DIR/legacy-v1/dropped"/*)
+      printf 'dropped\n'
+      return
+      ;;
     "$LOOM_DIR/tied"/*)
       [[ "$(dirname "$dir")" == "$LOOM_DIR/tied" ]] &&
         { printf 'tied\n'; return; }
@@ -392,7 +457,8 @@ build_index() {
       while :; do
         cursor="$(dirname "$cursor")"
         case "$cursor" in
-          "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped")
+          "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped"|\
+          "$LOOM_DIR/legacy-v1/tied"|"$LOOM_DIR/legacy-v1/dropped")
             break
             ;;
         esac
@@ -425,7 +491,8 @@ build_index() {
   for dir in "${all_paths[@]}"; do
     child_parent="$(dirname "$dir")"
     case "$child_parent" in
-      "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped")
+      "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped"|\
+      "$LOOM_DIR/legacy-v1/tied"|"$LOOM_DIR/legacy-v1/dropped")
         continue
         ;;
     esac
@@ -577,10 +644,10 @@ has_waiting_ancestor() {
 ensure_under_threads() {
   local dir="$1" id="$2"
   case "$dir" in
-    "$LOOM_DIR/tied"/*)
+    "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
       die "cannot $3 a tied stitch"
       ;;
-    "$LOOM_DIR/dropped"/*)
+    "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
       die "cannot $3 a dropped stitch"
       ;;
     "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
@@ -666,28 +733,31 @@ EOF_STITCH
 
 cmd_init() {
   require_loom
-  local had_v1_entries=false tray entry
-  if [[ ! -e "$LOOM_DIR/format-version" ]]; then
-    for tray in threads tied dropped; do
-      [[ -d "$LOOM_DIR/$tray" ]] || continue
-      shopt -s nullglob dotglob
-      for entry in "$LOOM_DIR/$tray"/*; do
-        had_v1_entries=true
-        break 2
-      done
-      shopt -u nullglob dotglob
-    done
-    shopt -u nullglob dotglob
+  local state
+  state="$(format_version_state)"
+  [[ "$state" != invalid ]] ||
+    die "invalid format-version marker (expected a regular file containing exactly '2')"
+  if [[ -e "$LOOM_DIR/.migrate-v2-staging" ||
+        -L "$LOOM_DIR/.migrate-v2-staging" ]]; then
+    if [[ "$state" == v2 ]]; then
+      die "v2 migration committed but staging cleanup remains; run 'loom.sh migrate-v2' to finish cleanup"
+    fi
+    die "unfinished v2 migration staging exists; run 'loom.sh migrate-v2' to resume or 'loom.sh migrate-v2 --rollback' to restore v1"
   fi
+  local had_v1_entries=false
+  loom_has_tray_entries && had_v1_entries=true
   mkdir -p "$LOOM_DIR/threads" "$LOOM_DIR/tied" "$LOOM_DIR/dropped"
-  if [[ ! -e "$LOOM_DIR/format-version" && "$had_v1_entries" == false ]]; then
-    printf '2\n' > "$LOOM_DIR/format-version"
+  if [[ "$state" == v1 && "$had_v1_entries" == false ]]; then
+    local marker_tmp="$LOOM_DIR/.format-version.tmp.$$"
+    printf '2\n' > "$marker_tmp"
+    mv "$marker_tmp" "$LOOM_DIR/format-version"
   fi
   echo "initialized $LOOM_DIR"
 }
 
 cmd_new() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   local parent_id="${2:-}"
@@ -705,10 +775,10 @@ cmd_new() {
     [[ -n "$parent" ]] || die "parent '$parent_id' not found"
 
     case "$parent" in
-      "$LOOM_DIR/dropped"/*)
+      "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
         die "cannot add child to dropped stitch '$parent_id'"
         ;;
-      "$LOOM_DIR/tied"/*)
+      "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
         die "cannot add child to tied stitch '$parent_id'"
         ;;
     esac
@@ -741,6 +811,7 @@ cmd_new() {
 
 cmd_claim() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
@@ -766,6 +837,7 @@ cmd_claim() {
 
 cmd_tend() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "tend requires <stitch-id>"
@@ -775,6 +847,7 @@ cmd_tend() {
 
 cmd_release() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "release requires <stitch-id>"
@@ -812,6 +885,7 @@ write_completed_at() {
 
 cmd_tie() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "tie requires <stitch-id>"
@@ -822,11 +896,11 @@ cmd_tie() {
   [[ -n "$src" ]] || die "stitch '$id' not found"
 
   case "$src" in
-    "$LOOM_DIR/tied"/*)
+    "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
       echo "already tied: $id"
       return 0
       ;;
-    "$LOOM_DIR/dropped"/*)
+    "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
       die "cannot tie a dropped stitch"
       ;;
     "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
@@ -1278,6 +1352,7 @@ cmd_queue_mutation() {
   local action="$1"
   shift
   require_loom
+  require_v2_mutation
   build_index
 
   local id="${1:-}" anchor="${2:-}"
@@ -1395,6 +1470,7 @@ subtree_stitch_ids() {
 
 cmd_wait() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "wait requires <stitch-id>"
@@ -1442,6 +1518,7 @@ cmd_wait() {
 
 cmd_resume() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "resume requires <stitch-id>"
@@ -1467,6 +1544,7 @@ cmd_resume() {
 
 cmd_drop() {
   require_loom
+  require_v2_mutation
   build_index
   local id="${1:-}"
   shift || true
@@ -1477,10 +1555,10 @@ cmd_drop() {
   src="$(find_unique_stitch_anywhere "$id" || true)"
   [[ -n "$src" ]] || die "stitch '$id' not found"
   case "$src" in
-    "$LOOM_DIR/tied"/*)
+    "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
       die "cannot drop a tied stitch"
       ;;
-    "$LOOM_DIR/dropped"/*)
+    "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
       echo "already dropped: $id"
       return 0
       ;;
@@ -1529,6 +1607,437 @@ cmd_drop() {
   fi
 }
 
+MIGRATION_KINDS=()
+MIGRATION_SOURCES=()
+MIGRATION_DESTINATIONS=()
+MIGRATION_BACKUPS=()
+MIGRATION_ACTIVE_COUNT=0
+MIGRATION_TIED_COUNT=0
+MIGRATION_DROPPED_COUNT=0
+MIGRATION_REASON_COUNT=0
+MIGRATION_WARNINGS=()
+
+migration_add_plan() {
+  local kind="$1" source="$2" destination="$3"
+  MIGRATION_KINDS+=("$kind")
+  MIGRATION_SOURCES+=("$source")
+  MIGRATION_DESTINATIONS+=("$destination")
+  MIGRATION_BACKUPS+=("backup/$source")
+}
+
+migration_fail_at() {
+  local point="$1"
+  if [[ "${LOOM_TEST_FAIL_MIGRATION_AT:-}" == "$point" ]]; then
+    die "injected migration failure at $point"
+  fi
+}
+
+migration_validate_id_from_name() {
+  local name="$1" context="$2" id
+  id="$(strip_state_suffix "$name")"
+  is_valid_id "$id" ||
+    die "malformed v1 stitch directory '$context'"
+  printf '%s\n' "$id"
+}
+
+migration_validate_and_plan() {
+  MIGRATION_KINDS=()
+  MIGRATION_SOURCES=()
+  MIGRATION_DESTINATIONS=()
+  MIGRATION_BACKUPS=()
+  MIGRATION_ACTIVE_COUNT=0
+  MIGRATION_TIED_COUNT=0
+  MIGRATION_DROPPED_COUNT=0
+  MIGRATION_REASON_COUNT=0
+  MIGRATION_WARNINGS=()
+
+  local tray entry relative name id sidecar destination
+  declare -A identities=()
+  declare -A dropped_ids=()
+
+  for tray in threads tied dropped; do
+    [[ ! -e "$LOOM_DIR/$tray" || -d "$LOOM_DIR/$tray" ]] ||
+      die "v1 tray '$tray' is not a directory"
+  done
+
+  if [[ -d "$LOOM_DIR/threads" ]]; then
+    while IFS= read -r -d '' entry; do
+      relative="${entry#$LOOM_DIR/}"
+      [[ -f "$entry/instructions.md" && ! -L "$entry/instructions.md" ]] ||
+        die "v1 directory '$relative' lacks a regular instructions.md; classify it as support or repair the ambiguity before migration"
+      name="$(basename "$entry")"
+      id="$(migration_validate_id_from_name "$name" "$relative")"
+      [[ -z "${identities[$id]:-}" ]] ||
+        die "duplicate v1 stitch id '$id': '${identities[$id]}' and '$relative'"
+      identities["$id"]="$relative"
+      MIGRATION_ACTIVE_COUNT=$((MIGRATION_ACTIVE_COUNT + 1))
+    done < <(find "$LOOM_DIR/threads" -mindepth 1 -type d -print0 | sort -z)
+
+    while IFS= read -r -d '' entry; do
+      relative="${entry#$LOOM_DIR/}"
+      die "unsupported symbolic link in active v1 loom: '$relative'"
+    done < <(find "$LOOM_DIR/threads" -mindepth 1 -type l -print0 | sort -z)
+  fi
+
+  for tray in tied dropped; do
+    [[ -d "$LOOM_DIR/$tray" ]] || continue
+    while IFS= read -r -d '' entry; do
+      relative="${entry#$LOOM_DIR/}"
+      name="$(basename "$entry")"
+      if [[ -L "$entry" ]]; then
+        die "unsupported symbolic link in v1 $tray tray: '$relative'"
+      fi
+      if [[ -d "$entry" ]]; then
+        [[ -f "$entry/instructions.md" && ! -L "$entry/instructions.md" ]] ||
+          die "v1 $tray record '$relative' lacks a regular instructions.md"
+        id="$(migration_validate_id_from_name "$name" "$relative")"
+        [[ "$id" == "$name" ]] ||
+          die "v1 $tray archive '$relative' has a lifecycle suffix"
+        [[ -z "${identities[$id]:-}" ]] ||
+          die "duplicate v1 stitch id '$id': '${identities[$id]}' and '$relative'"
+        identities["$id"]="$relative"
+        destination="legacy-v1/$tray/$name"
+        [[ ! -e "$LOOM_DIR/$destination" && ! -L "$LOOM_DIR/$destination" ]] ||
+          die "migration destination collision at '$destination'"
+        migration_add_plan "$tray" "$relative" "$destination"
+        if [[ "$tray" == tied ]]; then
+          MIGRATION_TIED_COUNT=$((MIGRATION_TIED_COUNT + 1))
+        else
+          MIGRATION_DROPPED_COUNT=$((MIGRATION_DROPPED_COUNT + 1))
+          dropped_ids["$id"]=1
+        fi
+      elif [[ "$tray" == dropped && "$name" == *.reason.md ]]; then
+        :
+      else
+        MIGRATION_WARNINGS+=("top-level v1 support entry retained unchanged: $relative")
+      fi
+    done < <(find "$LOOM_DIR/$tray" -mindepth 1 -maxdepth 1 -print0 | sort -z)
+  done
+
+  if [[ -d "$LOOM_DIR/dropped" ]]; then
+    while IFS= read -r -d '' sidecar; do
+      relative="${sidecar#$LOOM_DIR/}"
+      name="$(basename "$sidecar")"
+      id="${name%.reason.md}"
+      [[ -f "$sidecar" && ! -L "$sidecar" ]] ||
+        die "drop reason sidecar '$relative' is not a regular file"
+      is_valid_id "$id" ||
+        die "malformed drop reason sidecar '$relative'"
+      [[ -n "${dropped_ids[$id]:-}" ]] ||
+        die "orphan drop reason sidecar '$relative' has no corresponding dropped stitch"
+      [[ ! -e "$LOOM_DIR/dropped/$id/reason.md" ]] ||
+        die "migration destination collision: '$relative' and 'dropped/$id/reason.md' both map to the legacy reason"
+      destination="legacy-v1/dropped/$id/reason.md"
+      [[ ! -e "$LOOM_DIR/$destination" && ! -L "$LOOM_DIR/$destination" ]] ||
+        die "migration destination collision at '$destination'"
+      migration_add_plan reason "$relative" "$destination"
+      MIGRATION_REASON_COUNT=$((MIGRATION_REASON_COUNT + 1))
+    done < <(
+      find "$LOOM_DIR/dropped" -mindepth 1 -maxdepth 1 \
+        -type f -name '*.reason.md' -print0 | sort -z
+    )
+  fi
+
+  if [[ -e "$LOOM_DIR/legacy-v1" || -L "$LOOM_DIR/legacy-v1" ]]; then
+    [[ -d "$LOOM_DIR/legacy-v1" ]] ||
+      die "migration destination collision at 'legacy-v1'"
+    while IFS= read -r -d '' entry; do
+      relative="${entry#$LOOM_DIR/}"
+      [[ -f "$entry/instructions.md" && ! -L "$entry/instructions.md" ]] ||
+        die "existing legacy record '$relative' lacks a regular instructions.md"
+      id="$(migration_validate_id_from_name "$(basename "$entry")" "$relative")"
+      [[ -z "${identities[$id]:-}" ]] ||
+        die "duplicate v1 stitch id '$id': '${identities[$id]}' and '$relative'"
+      identities["$id"]="$relative"
+    done < <(
+      find "$LOOM_DIR/legacy-v1" -mindepth 2 -maxdepth 2 \
+        -type d -print0 | sort -z
+    )
+  fi
+}
+
+migration_print_plan() {
+  local i warning
+  echo "v1 -> v2 migration plan"
+  echo "validate active v1 stitch directories and flat history"
+  echo "mkdir .migrate-v2-staging"
+  echo "write .migrate-v2-staging/plan"
+  echo "write .migrate-v2-staging/completed (atomic step journal)"
+  echo "mkdir legacy-v1/tied legacy-v1/dropped"
+  for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+    printf 'copy %s -> .migrate-v2-staging/%s\n' \
+      "${MIGRATION_SOURCES[$i]}" "${MIGRATION_BACKUPS[$i]}"
+  done
+  for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+    printf 'move %s -> %s\n' \
+      "${MIGRATION_SOURCES[$i]}" "${MIGRATION_DESTINATIONS[$i]}"
+  done
+  echo "write format-version = 2 (last)"
+  echo "cleanup .migrate-v2-staging after marker commit"
+  printf 'summary: active=%s legacy-tied=%s legacy-dropped=%s reasons=%s warnings=%s\n' \
+    "$MIGRATION_ACTIVE_COUNT" "$MIGRATION_TIED_COUNT" \
+    "$MIGRATION_DROPPED_COUNT" "$MIGRATION_REASON_COUNT" \
+    "${#MIGRATION_WARNINGS[@]}"
+  for warning in "${MIGRATION_WARNINGS[@]}"; do
+    printf 'warning: %s\n' "$warning"
+  done
+}
+
+migration_write_plan() {
+  local stage="$LOOM_DIR/.migrate-v2-staging"
+  local plan_tmp="$stage/.plan.tmp.$$" i
+  {
+    printf 'loom-migrate-v2-plan\t1\n'
+    for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+      printf '%s\t%s\t%s\t%s\n' \
+        "${MIGRATION_KINDS[$i]}" "${MIGRATION_SOURCES[$i]}" \
+        "${MIGRATION_DESTINATIONS[$i]}" "${MIGRATION_BACKUPS[$i]}"
+    done
+  } > "$plan_tmp"
+  mv "$plan_tmp" "$stage/plan"
+  : > "$stage/completed"
+}
+
+migration_validate_loaded_step() {
+  local kind="$1" source="$2" destination="$3" backup="$4"
+  local id
+  case "$kind" in
+    tied|dropped)
+      [[ "$source" == "$kind/"* && "$source" != */*/* ]] ||
+        die "migration staging plan has unsafe $kind source '$source'"
+      id="${source#*/}"
+      is_valid_id "$id" ||
+        die "migration staging plan has invalid stitch id '$id'"
+      [[ "$destination" == "legacy-v1/$kind/$id" ]] ||
+        die "migration staging plan has mismatched destination '$destination'"
+      ;;
+    reason)
+      [[ "$source" == dropped/*.reason.md && "$source" != */*/* ]] ||
+        die "migration staging plan has unsafe reason source '$source'"
+      id="${source#dropped/}"
+      id="${id%.reason.md}"
+      is_valid_id "$id" ||
+        die "migration staging plan has invalid reason id '$id'"
+      [[ "$destination" == "legacy-v1/dropped/$id/reason.md" ]] ||
+        die "migration staging plan has mismatched reason destination '$destination'"
+      ;;
+    *)
+      die "migration staging plan has unknown step kind '$kind'"
+      ;;
+  esac
+  [[ "$backup" == "backup/$source" ]] ||
+    die "migration staging plan has mismatched backup '$backup'"
+}
+
+migration_load_plan() {
+  local stage="$LOOM_DIR/.migrate-v2-staging"
+  [[ -f "$stage/plan" && ! -L "$stage/plan" ]] ||
+    die "migration staging is missing its recovery plan; preserve '$stage' and restore from its backup/ tree manually"
+  MIGRATION_KINDS=()
+  MIGRATION_SOURCES=()
+  MIGRATION_DESTINATIONS=()
+  MIGRATION_BACKUPS=()
+  local kind source destination backup header=true
+  while IFS=$'\t' read -r kind source destination backup; do
+    if [[ "$header" == true ]]; then
+      [[ "$kind" == loom-migrate-v2-plan && "$source" == 1 ]] ||
+        die "migration staging plan has an unsupported format"
+      header=false
+      continue
+    fi
+    [[ -n "$kind" && -n "$source" && -n "$destination" && -n "$backup" ]] ||
+      die "migration staging plan is malformed"
+    migration_validate_loaded_step "$kind" "$source" "$destination" "$backup"
+    MIGRATION_KINDS+=("$kind")
+    MIGRATION_SOURCES+=("$source")
+    MIGRATION_DESTINATIONS+=("$destination")
+    MIGRATION_BACKUPS+=("$backup")
+  done < "$stage/plan"
+  [[ "$header" == false ]] || die "migration staging plan is empty"
+}
+
+migration_record_completed() {
+  local record="$1" stage="$LOOM_DIR/.migrate-v2-staging"
+  local completed_tmp="$stage/.completed.tmp.$$"
+  {
+    [[ ! -f "$stage/completed" ]] || cat "$stage/completed"
+    printf '%s\n' "$record"
+  } > "$completed_tmp"
+  mv "$completed_tmp" "$stage/completed"
+}
+
+migration_is_completed() {
+  local record="$1"
+  [[ -f "$LOOM_DIR/.migrate-v2-staging/completed" ]] &&
+    grep -Fqx "$record" "$LOOM_DIR/.migrate-v2-staging/completed"
+}
+
+migration_execute() {
+  local stage="$LOOM_DIR/.migrate-v2-staging"
+  local i kind source destination backup record
+  mkdir -p "$LOOM_DIR/legacy-v1/tied" "$LOOM_DIR/legacy-v1/dropped"
+
+  for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+    kind="${MIGRATION_KINDS[$i]}"
+    source="${MIGRATION_SOURCES[$i]}"
+    backup="${MIGRATION_BACKUPS[$i]}"
+    record="backup:$i"
+    if ! migration_is_completed "$record"; then
+      migration_fail_at "backup-$kind"
+      if [[ ! -e "$stage/$backup" ]]; then
+        [[ -e "$LOOM_DIR/$source" ]] ||
+          die "cannot back up missing migration source '$source'"
+        local backup_parent backup_name backup_partial
+        backup_parent="$(dirname "$stage/$backup")"
+        backup_name="$(basename "$stage/$backup")"
+        backup_partial="$backup_parent/.$backup_name.partial"
+        mkdir -p "$backup_parent"
+        rm -rf -- "$backup_partial"
+        cp -a "$LOOM_DIR/$source" "$backup_partial"
+        mv "$backup_partial" "$stage/$backup"
+      fi
+      migration_record_completed "$record"
+      migration_fail_at "after-backup-$kind"
+    fi
+  done
+
+  for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+    kind="${MIGRATION_KINDS[$i]}"
+    source="${MIGRATION_SOURCES[$i]}"
+    destination="${MIGRATION_DESTINATIONS[$i]}"
+    record="move:$i"
+    if migration_is_completed "$record"; then
+      continue
+    fi
+    migration_fail_at "move-$kind"
+    if [[ -e "$LOOM_DIR/$source" && ! -e "$LOOM_DIR/$destination" ]]; then
+      mkdir -p "$(dirname "$LOOM_DIR/$destination")"
+      mv "$LOOM_DIR/$source" "$LOOM_DIR/$destination"
+    elif [[ ! -e "$LOOM_DIR/$source" && -e "$LOOM_DIR/$destination" ]]; then
+      :
+    else
+      die "cannot resume migration step '$source' -> '$destination'; expected exactly one path to exist"
+    fi
+    migration_record_completed "$record"
+    migration_fail_at "after-move-$kind"
+  done
+
+  migration_fail_at marker
+  local marker_tmp="$LOOM_DIR/.format-version.tmp.$$"
+  printf '2\n' > "$marker_tmp"
+  mv "$marker_tmp" "$LOOM_DIR/format-version"
+  migration_fail_at after-marker
+  rm -rf -- "$stage"
+}
+
+migration_rollback() {
+  local stage="$LOOM_DIR/.migrate-v2-staging"
+  [[ -d "$stage" ]] ||
+    die "no interrupted migration staging directory to roll back"
+  [[ "$(format_version_state)" != v2 ]] ||
+    die "cannot roll back after the v2 format marker was committed"
+  migration_load_plan
+  local i source destination backup
+  for (( i=${#MIGRATION_SOURCES[@]}-1; i>=0; i-- )); do
+    source="${MIGRATION_SOURCES[$i]}"
+    destination="${MIGRATION_DESTINATIONS[$i]}"
+    backup="${MIGRATION_BACKUPS[$i]}"
+    if [[ -e "$LOOM_DIR/$destination" && ! -e "$LOOM_DIR/$source" ]]; then
+      mkdir -p "$(dirname "$LOOM_DIR/$source")"
+      mv "$LOOM_DIR/$destination" "$LOOM_DIR/$source"
+    elif [[ -e "$LOOM_DIR/$destination" && -e "$LOOM_DIR/$source" ]]; then
+      die "rollback collision: both '$source' and '$destination' exist"
+    elif [[ ! -e "$LOOM_DIR/$source" ]]; then
+      [[ -e "$stage/$backup" ]] ||
+        die "rollback cannot recover '$source'; preserve '$stage' for manual recovery"
+      local source_parent source_name source_partial
+      source_parent="$(dirname "$LOOM_DIR/$source")"
+      source_name="$(basename "$LOOM_DIR/$source")"
+      source_partial="$source_parent/.$source_name.rollback-partial"
+      mkdir -p "$source_parent"
+      rm -rf -- "$source_partial"
+      cp -a "$stage/$backup" "$source_partial"
+      mv "$source_partial" "$LOOM_DIR/$source"
+    fi
+  done
+  rmdir "$LOOM_DIR/legacy-v1/tied" 2>/dev/null || true
+  rmdir "$LOOM_DIR/legacy-v1/dropped" 2>/dev/null || true
+  rmdir "$LOOM_DIR/legacy-v1" 2>/dev/null || true
+  rm -rf -- "$stage"
+  echo "rolled back migrate-v2; the markerless v1 layout is restored"
+}
+
+migration_finish_committed() {
+  local stage="$LOOM_DIR/.migrate-v2-staging"
+  migration_load_plan
+  local i source destination
+  for (( i=0; i<${#MIGRATION_SOURCES[@]}; i++ )); do
+    source="${MIGRATION_SOURCES[$i]}"
+    destination="${MIGRATION_DESTINATIONS[$i]}"
+    [[ ! -e "$LOOM_DIR/$source" && -e "$LOOM_DIR/$destination" ]] ||
+      die "v2 marker is committed but migration paths are inconsistent at '$source' -> '$destination'; preserve '$stage' for manual recovery"
+  done
+  rm -rf -- "$stage"
+  echo "finished cleanup for the already committed v2 migration"
+}
+
+cmd_migrate_v2() {
+  require_loom
+  local mode="${1:-}"
+  (( $# <= 1 )) || die "migrate-v2 accepts only --dry-run or --rollback"
+  case "$mode" in
+    ""|--dry-run|--rollback) ;;
+    *) die "migrate-v2 accepts only --dry-run or --rollback" ;;
+  esac
+
+  if [[ "$mode" == --rollback ]]; then
+    migration_rollback
+    return
+  fi
+
+  local state
+  state="$(format_version_state)"
+  if [[ "$state" == v2 ]]; then
+    if [[ -e "$LOOM_DIR/.migrate-v2-staging" ||
+          -L "$LOOM_DIR/.migrate-v2-staging" ]]; then
+      [[ "$mode" != --rollback ]] ||
+        die "cannot roll back after the v2 format marker was committed"
+      [[ "$mode" != --dry-run ]] ||
+        die "v2 marker is committed and cleanup remains; run 'loom.sh migrate-v2' to finish cleanup"
+      migration_finish_committed
+      return
+    fi
+    echo "already format v2; nothing to migrate"
+    return
+  fi
+  [[ "$state" != invalid ]] ||
+    die "invalid format-version marker (expected a regular file containing exactly '2')"
+
+  if [[ -e "$LOOM_DIR/.migrate-v2-staging" ||
+        -L "$LOOM_DIR/.migrate-v2-staging" ]]; then
+    [[ -d "$LOOM_DIR/.migrate-v2-staging" ]] ||
+      die "migration staging path exists but is not a directory"
+    if [[ "$mode" == --dry-run ]]; then
+      die "unfinished migration staging exists; run 'loom.sh migrate-v2' to resume or 'loom.sh migrate-v2 --rollback' to restore v1"
+    fi
+    echo "resuming interrupted migrate-v2 (use 'loom.sh migrate-v2 --rollback' instead to restore v1)"
+    migration_load_plan
+    migration_execute
+    echo "migration resumed and completed; legacy v1 history is under legacy-v1/"
+    return
+  fi
+
+  migration_validate_and_plan
+  migration_print_plan
+  [[ "$mode" != --dry-run ]] || return 0
+
+  mkdir "$LOOM_DIR/.migrate-v2-staging" ||
+    die "could not create migration staging directory"
+  migration_write_plan
+  migration_execute
+  echo "migration complete; legacy v1 history is under legacy-v1/"
+}
+
 sweep_dir() {
   local dir="$1" kind="$2" days="$3"
   [[ -d "$dir" ]] || return 0
@@ -1544,6 +2053,7 @@ sweep_dir() {
 
 cmd_sweep() {
   require_loom
+  require_v2_mutation
   local days="${1:-14}"
   [[ "$days" =~ ^[0-9]+$ ]] || die "sweep <days> must be a non-negative integer"
   sweep_dir "$LOOM_DIR/tied" tied "$days"
@@ -1616,6 +2126,10 @@ main() {
     status)
       shift
       cmd_status "$@"
+      ;;
+    migrate-v2)
+      shift
+      cmd_migrate_v2 "$@"
       ;;
     sweep)
       shift
