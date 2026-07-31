@@ -36,10 +36,20 @@ assert_eq $'delta\ngamma\nalpha' "$(queue_ids)" "unqueue is idempotent"
 "$LOOM" claim gamma >/dev/null
 assert_eq "alpha" "$("$LOOM" next)" \
   "waiting and claimed queue heads must be skipped"
+assert_eq $'alpha\nbeta' "$("$LOOM" loose-ends)" \
+  "loose-ends uses queue preference then deterministic fallback"
+status_output="$("$LOOM" status)"
+assert_contains "$status_output" "- 1. delta (waiting)" \
+  "status shows queue position and waiting state"
+assert_contains "$status_output" "- 2. gamma (claimed)" \
+  "status shows claimed queue entries"
+assert_contains "$status_output" "- 3. alpha (ready)" \
+  "status shows ready queue entries"
 
 "$LOOM" new prerequisite >/dev/null
 mkdir -p "$TEST_REPO/.loom/threads/alpha/needs"
 : > "$TEST_REPO/.loom/threads/alpha/needs/prerequisite"
+"$LOOM" claim beta >/dev/null
 assert_eq "prerequisite" "$("$LOOM" next)" \
   "dependencies override queue and fallback is deterministic"
 
@@ -52,8 +62,8 @@ assert_fails_with "unknown" "$LOOM" first prerequisite
 assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
   "failed queue mutation must preserve bytes"
 "$LOOM" unqueue unknown >/dev/null
-assert_eq $'alpha\nalpha' "$(queue_ids)" \
-  "unqueue may repair a stale syntactically valid ID"
+assert_eq "alpha" "$(queue_ids)" \
+  "unqueue repairs a stale ID and de-duplicates retained entries"
 
 printf 'alpha\nbad id\n' > "$TEST_REPO/.loom/queue"
 assert_fails_with "invalid" "$LOOM" status
@@ -77,5 +87,44 @@ if LOOM_TEST_FAIL_QUEUE_WRITE=before-rename \
 fi
 assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
   "injected atomic write failure changed queue bytes"
+
+new_test_loom
+for id in alpha beta gamma; do
+  "$LOOM" new "$id" >/dev/null
+done
+printf '# first comment\n\nalpha\n# second comment\n' > "$TEST_REPO/.loom/queue"
+"$LOOM" before beta alpha >/dev/null
+assert_eq $'# first comment\n\n# second comment' \
+  "$(grep -e '^$' -e '^#' "$TEST_REPO/.loom/queue")" \
+  "queue mutations preserve blank/comment record order and bytes"
+assert_eq $'beta\nalpha' "$(queue_ids)" \
+  "before positions the moved ID without renaming stitches"
+assert_dir "$TEST_REPO/.loom/threads/alpha"
+assert_dir "$TEST_REPO/.loom/threads/beta"
+
+"$LOOM" new parent >/dev/null
+"$LOOM" new child parent >/dev/null
+"$LOOM" queue parent >/dev/null
+"$LOOM" queue child >/dev/null
+"$LOOM" drop parent "no longer needed" >/dev/null
+assert_not_contains "$(queue_ids)" "parent" \
+  "archiving a goal cleans its root queue entry"
+assert_not_contains "$(queue_ids)" "child" \
+  "archiving a goal cleans descendant queue entries"
+
+new_test_loom
+for id in alpha beta gamma delta; do
+  "$LOOM" new "$id" >/dev/null
+done
+pids=()
+for id in alpha beta gamma delta; do
+  "$LOOM" queue "$id" >/dev/null &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
+assert_eq $'alpha\nbeta\ndelta\ngamma' "$(queue_ids | sort)" \
+  "concurrent queue mutations retain every update exactly once"
 
 echo "v2 queue: ok"

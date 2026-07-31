@@ -14,6 +14,11 @@ usage:
   loom.sh resume <stitch-id>
   loom.sh tie <stitch-id>
   loom.sh drop <stitch-id> [reason...]
+  loom.sh queue <stitch-id>
+  loom.sh first <stitch-id>
+  loom.sh before <stitch-id> <anchor-stitch-id>
+  loom.sh after <stitch-id> <anchor-stitch-id>
+  loom.sh unqueue <stitch-id>
   loom.sh loose-ends
   loom.sh tending
   loom.sh waiting
@@ -27,6 +32,7 @@ notes:
   - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
   - a loose end is a plain stitch whose children and hard dependencies resolve
+  - queue order is a sparse preference; blocked entries never block ready work
   - .stitching means claimed; .waiting explicitly parks a stitch and its subtree
   - .tending means a child-bearing stitch has a steward; children stay claimable
 USAGE
@@ -128,6 +134,9 @@ walk_all_stitches() {
 INDEX_BUILT=false
 INDEX_ERRORS=()
 INDEX_CYCLES=()
+QUEUE_LINES=()
+QUEUE_IDS=()
+QUEUE_ERRORS=()
 EDGE_DEPENDENTS=()
 EDGE_TARGETS=()
 EDGE_STATES=()
@@ -144,11 +153,17 @@ declare -A INDEX_TERMINAL_ANCESTOR=()
 declare -A INDEX_UNRESOLVED_CHILDREN=()
 declare -A INDEX_INVALID=()
 declare -A INDEX_CYCLIC=()
+declare -A QUEUE_POSITION=()
+QUEUE_LOCK_DIR=""
+QUEUE_TEMP=""
 
 reset_index() {
   INDEX_BUILT=false
   INDEX_ERRORS=()
   INDEX_CYCLES=()
+  QUEUE_LINES=()
+  QUEUE_IDS=()
+  QUEUE_ERRORS=()
   EDGE_DEPENDENTS=()
   EDGE_TARGETS=()
   EDGE_STATES=()
@@ -165,6 +180,52 @@ reset_index() {
   INDEX_UNRESOLVED_CHILDREN=()
   INDEX_INVALID=()
   INDEX_CYCLIC=()
+  QUEUE_POSITION=()
+}
+
+queue_id_is_active() {
+  local id="$1"
+  [[ "${INDEX_COUNT[$id]:-0}" == 1 ]] || return 1
+  [[ "${INDEX_PATH[$id]}" == "$LOOM_DIR/threads/"* ]] || return 1
+  case "${INDEX_STATE[$id]}" in
+    tied|dropped|abandoned) return 1 ;;
+  esac
+  return 0
+}
+
+parse_queue() {
+  QUEUE_LINES=()
+  QUEUE_IDS=()
+  QUEUE_ERRORS=()
+  QUEUE_POSITION=()
+  [[ -f "$LOOM_DIR/queue" ]] || return 0
+
+  mapfile -t QUEUE_LINES < "$LOOM_DIR/queue"
+  local line position=0 count
+  declare -A seen=()
+  for line in "${QUEUE_LINES[@]}"; do
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    position=$((position + 1))
+    QUEUE_IDS+=("$line")
+    if ! is_valid_id "$line"; then
+      QUEUE_ERRORS+=("invalid queue entry at position $position: '$line'")
+      continue
+    fi
+    if [[ -n "${seen[$line]:-}" ]]; then
+      QUEUE_ERRORS+=("duplicate queue entry '$line' at position $position")
+      continue
+    fi
+    seen["$line"]=1
+    QUEUE_POSITION["$line"]="$position"
+    count="${INDEX_COUNT[$line]:-0}"
+    if (( count == 0 )); then
+      QUEUE_ERRORS+=("unknown queue entry '$line' at position $position")
+    elif (( count > 1 )); then
+      QUEUE_ERRORS+=("ambiguous queue entry '$line' at position $position")
+    elif ! queue_id_is_active "$line"; then
+      QUEUE_ERRORS+=("terminal queue entry '$line' at position $position")
+    fi
+  done
 }
 
 index_effective_state() {
@@ -432,6 +493,7 @@ build_index() {
   done
 
   index_detect_cycles
+  parse_queue
   INDEX_BUILT=true
 }
 
@@ -810,6 +872,8 @@ cmd_tie() {
   fi
 
   local canonical parent_dir
+  local terminal_ids=()
+  mapfile -t terminal_ids < <(subtree_stitch_ids "$src")
   canonical="$(strip_state_suffix "$(basename "$src")")"
   parent_dir="$(dirname "$src")"
   local dest
@@ -821,6 +885,7 @@ cmd_tie() {
   [[ ! -e "$dest" ]] || die "destination already exists: $dest"
   write_completed_at "$src"
   mv "$src" "$dest"
+  queue_remove_terminal_ids "${terminal_ids[@]}"
   echo "tied $canonical"
 }
 
@@ -896,13 +961,49 @@ list_goals() {
 list_loose_ends() {
   ensure_index
   local dir id
+  declare -A emitted=()
+
+  for id in "${QUEUE_IDS[@]}"; do
+    [[ -z "${emitted[$id]:-}" ]] || continue
+    is_valid_id "$id" || continue
+    if is_effectively_ready "$id"; then
+      dir="${INDEX_PATH[$id]}"
+      printf '%s\n' "${dir#$LOOM_DIR/threads/}"
+      emitted["$id"]=1
+    fi
+  done
+
   while IFS= read -r dir; do
     [[ -n "$dir" ]] || continue
     id="$(strip_state_suffix "$(basename "$dir")")"
-    if is_effectively_ready "$id"; then
+    if [[ -z "${emitted[$id]:-}" ]] && is_effectively_ready "$id"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
   done < <(walk_recognized "$LOOM_DIR/threads")
+}
+
+queue_state_label() {
+  local id="$1"
+  if ! is_valid_id "$id"; then
+    printf 'invalid\n'
+  elif (( ${INDEX_COUNT[$id]:-0} == 0 )); then
+    printf 'unknown\n'
+  elif (( ${INDEX_COUNT[$id]:-0} > 1 )); then
+    printf 'ambiguous\n'
+  elif ! queue_id_is_active "$id"; then
+    printf 'terminal\n'
+  elif is_effectively_ready "$id"; then
+    printf 'ready\n'
+  elif [[ -n "${INDEX_WAITING_ANCESTOR[$id]:-}" ]]; then
+    printf 'waiting inherited\n'
+  else
+    case "${INDEX_DIRECT_STATE[$id]}" in
+      stitching) printf 'claimed\n' ;;
+      waiting) printf 'waiting\n' ;;
+      tending) printf 'tended\n' ;;
+      *) printf 'blocked\n' ;;
+    esac
+  fi
 }
 
 list_claimed() {
@@ -955,6 +1056,15 @@ cmd_status() {
     echo
   fi
 
+  if (( ${#QUEUE_ERRORS[@]} > 0 )); then
+    health=1
+    echo "📋 queue errors"
+    for diagnostic in "${QUEUE_ERRORS[@]}"; do
+      printf -- '- %s\n' "$diagnostic"
+    done
+    echo
+  fi
+
   local has_broken=false
   for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
     [[ "${EDGE_STATES[$i]}" == broken ]] || continue
@@ -979,6 +1089,19 @@ cmd_status() {
       "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}"
   done
   [[ "$has_blocked" == false ]] || echo
+
+  echo "📋 sparse queue"
+  if (( ${#QUEUE_IDS[@]} == 0 )); then
+    echo "(empty)"
+  else
+    local queue_id queue_position=0
+    for queue_id in "${QUEUE_IDS[@]}"; do
+      queue_position=$((queue_position + 1))
+      printf -- '- %s. %s (%s)\n' \
+        "$queue_position" "$queue_id" "$(queue_state_label "$queue_id")"
+    done
+  fi
+  echo
 
   if (( ${#INDEX_CYCLES[@]} > 0 )); then
     echo "🔄 dependency cycles"
@@ -1076,6 +1199,198 @@ cmd_next() {
   local loose
   loose="$(list_loose_ends)"
   [[ -z "$loose" ]] || printf '%s\n' "${loose%%$'\n'*}"
+}
+
+queue_cleanup_lock() {
+  [[ -z "$QUEUE_TEMP" || ! -e "$QUEUE_TEMP" ]] || rm -f -- "$QUEUE_TEMP"
+  [[ -z "$QUEUE_LOCK_DIR" || ! -d "$QUEUE_LOCK_DIR" ]] ||
+    rmdir -- "$QUEUE_LOCK_DIR" 2>/dev/null || true
+  QUEUE_TEMP=""
+  QUEUE_LOCK_DIR=""
+}
+
+queue_acquire_lock() {
+  QUEUE_LOCK_DIR="$LOOM_DIR/.queue.lock"
+  local attempt=0
+  until mkdir "$QUEUE_LOCK_DIR" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    (( attempt < 200 )) ||
+      die "timed out waiting for another queue mutation"
+    sleep 0.05
+  done
+  trap queue_cleanup_lock EXIT
+  trap 'queue_cleanup_lock; exit 1' HUP INT TERM
+}
+
+queue_release_lock() {
+  queue_cleanup_lock
+  trap - EXIT HUP INT TERM
+}
+
+queue_write_lines() {
+  local -a lines=("$@")
+  QUEUE_TEMP="$(mktemp "$LOOM_DIR/.queue.tmp.XXXXXX")"
+  local line
+  {
+    for line in "${lines[@]}"; do
+      printf '%s\n' "$line"
+    done
+  } > "$QUEUE_TEMP"
+  if [[ "${LOOM_TEST_FAIL_QUEUE_WRITE:-}" == before-rename ]]; then
+    return 1
+  fi
+  mv "$QUEUE_TEMP" "$LOOM_DIR/queue"
+  QUEUE_TEMP=""
+}
+
+queue_validate_records_for_mutation() {
+  local exempt="${1:-}"
+  local line count
+  declare -A seen=()
+  for line in "${QUEUE_IDS[@]}"; do
+    if ! is_valid_id "$line"; then
+      die "cannot update queue: invalid entry '$line'"
+    fi
+    [[ -z "${seen[$line]:-}" ]] || continue
+    seen["$line"]=1
+    [[ "$line" != "$exempt" ]] || continue
+    count="${INDEX_COUNT[$line]:-0}"
+    (( count > 0 )) ||
+      die "cannot update queue: unknown entry '$line'"
+    (( count == 1 )) ||
+      die "cannot update queue: ambiguous entry '$line'"
+    queue_id_is_active "$line" ||
+      die "cannot update queue: terminal entry '$line'"
+  done
+}
+
+queue_require_active_id() {
+  local id="$1"
+  validate_id "$id"
+  local count="${INDEX_COUNT[$id]:-0}"
+  (( count > 0 )) || die "unknown active stitch '$id'"
+  (( count == 1 )) || die "ambiguous stitch id '$id'"
+  queue_id_is_active "$id" ||
+    die "stitch '$id' is terminal or archived, not active"
+}
+
+cmd_queue_mutation() {
+  local action="$1"
+  shift
+  require_loom
+  build_index
+
+  local id="${1:-}" anchor="${2:-}"
+  case "$action" in
+    queue|first|unqueue)
+      (( $# == 1 )) || die "$action requires <stitch-id>"
+      ;;
+    before|after)
+      (( $# == 2 )) || die "$action requires <stitch-id> <anchor-stitch-id>"
+      ;;
+  esac
+
+  if [[ "$action" == unqueue ]]; then
+    validate_id "$id"
+  else
+    queue_require_active_id "$id"
+  fi
+  if [[ "$action" == before || "$action" == after ]]; then
+    validate_id "$anchor"
+    [[ "$id" != "$anchor" ]] ||
+      die "$action requires different stitch and anchor IDs"
+  fi
+
+  queue_acquire_lock
+  # Rebuild after taking the lock so a concurrent lifecycle operation cannot
+  # make the target terminal between our initial command check and this write.
+  build_index
+  if [[ "$action" != unqueue ]]; then
+    queue_require_active_id "$id"
+  fi
+  queue_validate_records_for_mutation \
+    "$([[ "$action" == unqueue ]] && printf '%s' "$id")"
+
+  if [[ "$action" == before || "$action" == after ]]; then
+    local anchor_found=false queued_id
+    for queued_id in "${QUEUE_IDS[@]}"; do
+      if [[ "$queued_id" == "$anchor" ]]; then
+        anchor_found=true
+        break
+      fi
+    done
+    [[ "$anchor_found" == true ]] ||
+      die "queue anchor '$anchor' not found"
+  fi
+
+  local -a filtered=()
+  local line inserted=false
+  declare -A retained=()
+  for line in "${QUEUE_LINES[@]}"; do
+    if [[ -z "$line" || "$line" == \#* ]]; then
+      filtered+=("$line")
+      continue
+    fi
+    [[ "$line" != "$id" ]] || continue
+    [[ -z "${retained[$line]:-}" ]] || continue
+    retained["$line"]=1
+    if [[ "$action" == before && "$line" == "$anchor" ]]; then
+      filtered+=("$id")
+      inserted=true
+    fi
+    filtered+=("$line")
+    if [[ "$action" == after && "$line" == "$anchor" ]]; then
+      filtered+=("$id")
+      inserted=true
+    fi
+  done
+
+  case "$action" in
+    first) filtered=("$id" "${filtered[@]}") ;;
+    queue) filtered+=("$id") ;;
+    before|after)
+      [[ "$inserted" == true ]] ||
+        die "queue anchor '$anchor' could not be positioned"
+      ;;
+  esac
+
+  queue_write_lines "${filtered[@]}" ||
+    die "injected queue write failure before atomic rename"
+  queue_release_lock
+  echo "$action $id"
+}
+
+queue_remove_terminal_ids() {
+  (( $# > 0 )) || return 0
+  [[ -f "$LOOM_DIR/queue" ]] || return 0
+  local -a removed_ids=("$@")
+  queue_acquire_lock
+  mapfile -t QUEUE_LINES < "$LOOM_DIR/queue"
+  local -a retained=()
+  local line removed
+  for line in "${QUEUE_LINES[@]}"; do
+    removed=false
+    local id
+    for id in "${removed_ids[@]}"; do
+      if [[ "$line" == "$id" ]]; then
+        removed=true
+        break
+      fi
+    done
+    [[ "$removed" == true ]] || retained+=("$line")
+  done
+  queue_write_lines "${retained[@]}" ||
+    die "failed to clean terminal stitches from queue"
+  queue_release_lock
+}
+
+subtree_stitch_ids() {
+  local root="$1" dir
+  printf '%s\n' "$(strip_state_suffix "$(basename "$root")")"
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    printf '%s\n' "$(strip_state_suffix "$(basename "$dir")")"
+  done < <(walk_recognized "$root")
 }
 
 cmd_wait() {
@@ -1182,6 +1497,8 @@ cmd_drop() {
     die "cannot drop abandoned stitch '$id' beneath a terminal ancestor"
 
   local canonical parent_dir
+  local terminal_ids=()
+  mapfile -t terminal_ids < <(subtree_stitch_ids "$src")
   canonical="$(strip_state_suffix "$(basename "$src")")"
   parent_dir="$(dirname "$src")"
   local dest
@@ -1204,6 +1521,7 @@ cmd_drop() {
   } > "$reason_file"
   write_completed_at "$src"
   mv "$src" "$dest"
+  queue_remove_terminal_ids "${terminal_ids[@]}"
 
   echo "dropped $canonical"
   if (( $# == 0 )); then
@@ -1274,6 +1592,10 @@ main() {
     drop)
       shift
       cmd_drop "$@"
+      ;;
+    queue|first|before|after|unqueue)
+      shift
+      cmd_queue_mutation "$cmd" "$@"
       ;;
     loose-ends)
       shift

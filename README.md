@@ -106,7 +106,9 @@ After the final child is tied or dropped, a tended parent becomes childless. Eit
 
 ## Agent loop
 
-1. Run `./loom.sh next` (or `./loom.sh loose-ends` to see all of them). Loose ends sort lexically by path — the top of the list is the priority queue, so keep it ordered (see **Ordering**).
+1. Run `./loom.sh next` (or `./loom.sh loose-ends` to see all of them).
+   Ready stitches named in `.loom/queue` come first in queue order, followed
+   deterministically by the unqueued ready work (see **Ordering**).
 2. Claim it: `./loom.sh claim <stitch-id>`.
 3. Read its `instructions.md`. Ask: *what is the next concrete action?*
 4. Decide:
@@ -144,15 +146,25 @@ them.
 
 ## Ordering
 
-`loose-ends` and `next` sort **full paths, lexically**. Names are the only priority mechanism — there is no other ordering state. To make `next` serve work in the order you intend:
+Stitch IDs should be stable and semantic: `fetch-source`, `parse-catalog`, or
+`publish-report`. Use `needs/<stitch-id>` when one stitch truly cannot proceed
+until another is tied.
 
-* Prefix names with numbers: `1-fetch/`, `2-parse/`.
-* **Zero-pad any level that may pass nine** (`01-` … `13-`) — otherwise `10-` sorts before `2-`.
-* Priority **across threads** works the same way: prefix the goal stitches themselves. An unprefixed loom is served alphabetically, which is rarely the priority you meant.
-* A parent's prefix dominates its children: `01-goal/2-child` sorts before `02-goal/1-child`.
-* To reprioritise, rename (`mv` — the filesystem is the protocol), then fix any references to the old names in `instructions.md` prose.
+For softer preference, keep only the IDs that matter in `.loom/queue`:
 
-Unnumbered siblings mean *any order is fine*. If you find yourself explaining priority in prose instead of encoding it in names, encode it in names.
+```sh
+./loom.sh queue parse-catalog
+./loom.sh first urgent-repair
+./loom.sh before publish-report parse-catalog
+./loom.sh after fetch-source urgent-repair
+./loom.sh unqueue urgent-repair
+```
+
+The first argument to `before` and `after` is the ID being moved. A queued
+stitch that is waiting, claimed, or dependency-blocked is skipped, so it never
+prevents later ready work. Unqueued ready stitches follow in lexical path
+order. Reprioritising therefore never requires renaming an ID or repairing
+dependency references.
 
 ## Artifacts
 
@@ -189,6 +201,11 @@ It can contain:
 ./loom.sh resume <stitch-id>
 ./loom.sh tie <stitch-id>
 ./loom.sh drop <stitch-id> [reason...]
+./loom.sh queue <stitch-id>
+./loom.sh first <stitch-id>
+./loom.sh before <stitch-id> <anchor-stitch-id>
+./loom.sh after <stitch-id> <anchor-stitch-id>
+./loom.sh unqueue <stitch-id>
 ./loom.sh loose-ends
 ./loom.sh tending
 ./loom.sh waiting
