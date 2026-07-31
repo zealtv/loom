@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "format_version": 2,
+  "loom_root": "<LOOM_ROOT>",
+  "stitches": [
+    {
+      "id": "build",
+      "root_id": "release",
+      "parent_id": "release",
+      "path": "threads/release/build",
+      "tray": "threads",
+      "state": "plain",
+      "ready": false,
+      "waiting_inherited": false,
+      "queue_position": 1,
+      "completed_at": null,
+      "archived": false,
+      "legacy": false,
+      "children": [],
+      "dependencies": [
+        {
+          "from": "build",
+          "to": "design",
+          "status": "blocked",
+          "reason": null
+        }
+      ],
+      "cycle": []
+    }
+  ],
+  "decomposition_edges": [
+    {
+      "parent": "release",
+      "child": "build"
+    }
+  ],
+  "dependency_edges": [
+    {
+      "from": "build",
+      "to": "design",
+      "status": "blocked",
+      "reason": null
+    }
+  ],
+  "cycles": [],
+  "frontier": [],
+  "recently_completed": [],
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "example",
+      "message": "shape fixture, not command output",
+      "stitch_id": null,
+      "target_id": null
+    }
+  ]
+}

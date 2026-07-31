@@ -158,8 +158,16 @@ It can contain:
 
 ## Verification
 
-Run the focused lifecycle check from the repository root:
+Run the complete test entry point from the repository root:
 
 ```sh
-./test/tending.sh
+./test/run.sh
 ```
+
+The runner preserves the current lifecycle coverage and prints a loud skip for
+each not-yet-implemented v2 stage. Set `LOOM_V2_STAGE=<stage-number>` while
+implementing a stage to enable its contract tests and all earlier stages.
+
+The frozen future-format contract is
+[`docs/protocol-v2.md`](docs/protocol-v2.md). Until those staged tests are
+enabled and implemented, the CLI behavior documented above remains v1.
