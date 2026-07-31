@@ -11,6 +11,8 @@ assert_eq "2" "$(<"$TEST_REPO/.loom/format-version")" "format marker"
 "$LOOM" new kept goal >/dev/null
 "$LOOM" new nested kept >/dev/null
 "$LOOM" new omitted goal >/dev/null
+"$LOOM" new stopped-branch goal >/dev/null
+"$LOOM" new unfinished stopped-branch >/dev/null
 
 mkdir -p "$TEST_REPO/.loom/threads/goal/notes/example-payloads/deep"
 printf '# not-a-stitch\n' > \
@@ -19,7 +21,9 @@ mkdir -p "$TEST_REPO/.loom/threads/goal/kept/fixtures"
 printf 'artifact\n' > \
   "$TEST_REPO/.loom/threads/goal/kept/fixtures/payload.txt"
 
-assert_eq $'goal/kept/nested\ngoal/omitted' "$("$LOOM" loose-ends)" \
+assert_eq \
+  $'goal/kept/nested\ngoal/omitted\ngoal/stopped-branch/unfinished' \
+  "$("$LOOM" loose-ends)" \
   "support directories must be opaque"
 
 "$LOOM" tie nested >/dev/null
@@ -37,13 +41,30 @@ assert_file "$TEST_REPO/.loom/threads/goal/omitted.dropped/reason.md"
 assert_contains \
   "$(<"$TEST_REPO/.loom/threads/goal/omitted.dropped/reason.md")" \
   "not required" "in-stitch drop reason"
+
+drop_hint="$("$LOOM" drop stopped-branch)"
+assert_contains "$drop_hint" "stopped-branch.dropped/reason.md" \
+  "reason scaffold edit hint"
+assert_dir "$TEST_REPO/.loom/threads/goal/stopped-branch.dropped/unfinished"
+assert_no_path \
+  "$TEST_REPO/.loom/threads/goal/stopped-branch.dropped/unfinished/completed-at"
+assert_file "$TEST_REPO/.loom/threads/goal/stopped-branch.dropped/reason.md"
 assert_eq "goal" "$("$LOOM" loose-ends)" "terminal children resolve parent"
+status_output="$("$LOOM" status)"
+assert_contains "$status_output" "kept.tied (tied)" "tied child status"
+assert_contains "$status_output" "omitted.dropped (dropped)" "dropped child status"
+assert_contains "$status_output" "unfinished (abandoned)" \
+  "unfinished descendant status"
+assert_not_contains "$("$LOOM" waiting)" "omitted" \
+  "terminal child listed as waiting"
 
 "$LOOM" tie goal >/dev/null
 assert_dir "$TEST_REPO/.loom/tied/goal"
 assert_dir "$TEST_REPO/.loom/tied/goal/kept.tied"
 assert_dir "$TEST_REPO/.loom/tied/goal/omitted.dropped"
 assert_file "$TEST_REPO/.loom/tied/goal/notes/example-payloads/deep/instructions.md"
+assert_file "$TEST_REPO/.loom/tied/goal/completed-at"
+assert_iso8601_seconds "$(<"$TEST_REPO/.loom/tied/goal/completed-at")"
 
 new_test_loom
 "$LOOM" new abandoned >/dev/null

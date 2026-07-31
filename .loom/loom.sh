@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
 usage() {
   cat <<'USAGE'
@@ -43,17 +44,30 @@ require_loom() {
   REPO_ROOT="$(dirname "$LOOM_DIR")"
 }
 
+is_valid_id() {
+  local id="$1"
+  [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  local state
+  for state in stitching waiting tending tied dropped; do
+    [[ "$id" != *".$state" ]] || return 1
+  done
+  return 0
+}
+
 validate_id() {
   local id="$1"
-  [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid stitch id '$id' (use letters, numbers, ., _, -)"
-  [[ "$id" != *"/"* ]] || die "stitch id cannot contain /"
+  is_valid_id "$id" ||
+    die "invalid stitch id '$id' (use letters, numbers, ., _, - and no reserved state suffix)"
 }
 
 strip_state_suffix() {
   local name="$1"
   local state
-  for state in stitching waiting tending; do
-    name="${name%.$state}"
+  for state in stitching waiting tending tied dropped; do
+    if [[ "$name" == *".$state" ]]; then
+      printf '%s\n' "${name%.$state}"
+      return 0
+    fi
   done
   printf '%s\n' "$name"
 }
@@ -61,7 +75,7 @@ strip_state_suffix() {
 state_of_name() {
   local name="$1"
   local state
-  for state in stitching waiting tending; do
+  for state in stitching waiting tending tied dropped; do
     if [[ "$name" == *".$state" ]]; then
       printf '%s\n' "$state"
       return 0
@@ -75,8 +89,52 @@ state_label() {
     stitching) printf 'claimed\n' ;;
     waiting) printf 'waiting\n' ;;
     tending) printf 'tended\n' ;;
+    tied) printf 'tied\n' ;;
+    dropped) printf 'dropped\n' ;;
     plain) printf 'loose end\n' ;;
   esac
+}
+
+recognized_children() {
+  local dir="$1"
+  local entry
+  shopt -s nullglob
+  for entry in "$dir"/*; do
+    [[ -d "$entry" && -f "$entry/instructions.md" ]] || continue
+    printf '%s\n' "$entry"
+  done
+  shopt -u nullglob
+}
+
+walk_recognized() {
+  local dir="$1"
+  local entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    printf '%s\n' "$entry"
+    walk_recognized "$entry"
+  done < <(recognized_children "$dir")
+}
+
+walk_all_stitches() {
+  local tray
+  for tray in threads tied dropped; do
+    [[ -d "$LOOM_DIR/$tray" ]] || continue
+    walk_recognized "$LOOM_DIR/$tray"
+  done
+}
+
+has_terminal_ancestor() {
+  local dir="$1"
+  local parent
+  parent="$(dirname "$dir")"
+  while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
+    case "$(state_of_name "$(basename "$parent")")" in
+      tied|dropped) return 0 ;;
+    esac
+    parent="$(dirname "$parent")"
+  done
+  return 1
 }
 
 ensure_under_threads() {
@@ -110,6 +168,11 @@ set_stitch_state() {
     echo "$already: $id"
     return 0
   fi
+  if [[ "$current" == tied || "$current" == dropped ]]; then
+    die "cannot $action terminal stitch '$id' ($current)"
+  fi
+  has_terminal_ancestor "$existing" &&
+    die "cannot $action abandoned stitch '$id' beneath a terminal ancestor"
 
   if [[ "$current" == tending ]]; then
     die "'$id' is tended. release it before you $action it."
@@ -117,13 +180,13 @@ set_stitch_state() {
 
   case "$scope" in
     loose)
-      if has_child_dirs "$existing"; then
-        die "'$id' is not a loose end — it has children. only loose ends can $action."
+      if has_unresolved_children "$existing"; then
+        die "'$id' is not a loose end — it has unresolved children. only loose ends can $action."
       fi
       ;;
     parent)
-      if ! has_child_dirs "$existing"; then
-        die "'$id' has no children. only child-bearing stitches can $action."
+      if ! has_unresolved_children "$existing"; then
+        die "'$id' has no children requiring work. only child-bearing stitches can $action."
       fi
       ;;
     *)
@@ -140,17 +203,19 @@ set_stitch_state() {
 
 find_stitch_anywhere() {
   local id="$1"
-  local base="$2"
-  find "$base" \
-    -type d \
-    \( -name "$id" -o -name "$id.stitching" -o -name "$id.waiting" -o -name "$id.tending" \) \
-    -print
+  local dir
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    if [[ "$(strip_state_suffix "$(basename "$dir")")" == "$id" ]]; then
+      printf '%s\n' "$dir"
+    fi
+  done < <(walk_all_stitches)
 }
 
 find_unique_stitch_anywhere() {
   local id="$1"
   local matches
-  mapfile -t matches < <(find_stitch_anywhere "$id" "$LOOM_DIR")
+  mapfile -t matches < <(find_stitch_anywhere "$id")
   if (( ${#matches[@]} == 0 )); then
     return 1
   fi
@@ -163,7 +228,9 @@ find_unique_stitch_anywhere() {
 
 ensure_unique_new_id() {
   local id="$1"
-  if find_unique_stitch_anywhere "$id" >/dev/null 2>&1; then
+  local matches
+  mapfile -t matches < <(find_stitch_anywhere "$id")
+  if (( ${#matches[@]} > 0 )); then
     die "stitch '$id' already exists"
   fi
 }
@@ -183,7 +250,23 @@ EOF_STITCH
 
 cmd_init() {
   require_loom
+  local had_v1_entries=false tray entry
+  if [[ ! -e "$LOOM_DIR/format-version" ]]; then
+    for tray in threads tied dropped; do
+      [[ -d "$LOOM_DIR/$tray" ]] || continue
+      shopt -s nullglob dotglob
+      for entry in "$LOOM_DIR/$tray"/*; do
+        had_v1_entries=true
+        break 2
+      done
+      shopt -u nullglob dotglob
+    done
+    shopt -u nullglob dotglob
+  fi
   mkdir -p "$LOOM_DIR/threads" "$LOOM_DIR/tied" "$LOOM_DIR/dropped"
+  if [[ ! -e "$LOOM_DIR/format-version" && "$had_v1_entries" == false ]]; then
+    printf '2\n' > "$LOOM_DIR/format-version"
+  fi
   echo "initialized $LOOM_DIR"
 }
 
@@ -212,12 +295,17 @@ cmd_new() {
         die "cannot add child to tied stitch '$parent_id'"
         ;;
     esac
+    has_terminal_ancestor "$parent" &&
+      die "cannot add child beneath terminal ancestor of '$parent_id'"
 
     local parent_base
     parent_base="$(basename "$parent")"
     local parent_state
     parent_state="$(state_of_name "$parent_base")"
-    if [[ "$parent_state" != plain && "$parent_state" != tending ]]; then
+    if [[ "$parent_state" == tied || "$parent_state" == dropped ]]; then
+      die "cannot add child to terminal stitch '$parent_id'"
+    fi
+    if [[ "$parent_state" == stitching ]]; then
       local parent_dir unsuffixed
       parent_dir="$(dirname "$parent")"
       unsuffixed="$parent_dir/$parent_id"
@@ -276,6 +364,16 @@ cmd_release() {
   echo "released $id"
 }
 
+write_completed_at() {
+  local dir="$1"
+  local offset timestamp tmp
+  offset="$(date +%z)"
+  timestamp="$(date +"%Y-%m-%dT%H:%M:%S")${offset:0:3}:${offset:3:2}"
+  tmp="$dir/.completed-at.tmp.$$"
+  printf '%s\n' "$timestamp" > "$tmp"
+  mv "$tmp" "$dir/completed-at"
+}
+
 cmd_tie() {
   require_loom
   local id="${1:-}"
@@ -301,27 +399,45 @@ cmd_tie() {
       ;;
   esac
 
-  local child
+  local direct_state
+  direct_state="$(state_of_name "$(basename "$src")")"
+  if [[ "$direct_state" == tied ]]; then
+    echo "already tied: $id"
+    return 0
+  fi
+  [[ "$direct_state" != dropped ]] || die "cannot tie a dropped stitch"
+  [[ "$direct_state" != waiting ]] || die "cannot tie a waiting stitch"
+  has_terminal_ancestor "$src" &&
+    die "cannot tie abandoned stitch '$id' beneath a terminal ancestor"
+
+  local child child_state
   local unresolved=()
-  shopt -s nullglob
-  for child in "$src"/*/; do
-    child="${child%/}"
-    [[ -d "$child" ]] || continue
-    unresolved+=("$(basename "$child")")
-  done
-  shopt -u nullglob
+  while IFS= read -r child; do
+    [[ -n "$child" ]] || continue
+    child_state="$(state_of_name "$(basename "$child")")"
+    if [[ "$child_state" != tied && "$child_state" != dropped ]]; then
+      unresolved+=("$(strip_state_suffix "$(basename "$child")")")
+    fi
+  done < <(recognized_children "$src")
 
   if (( ${#unresolved[@]} > 0 )); then
-    echo "error: cannot tie '$id' — unresolved children in threads/:" >&2
+    echo "error: cannot tie '$id' — unresolved child stitches:" >&2
     printf '  - %s\n' "${unresolved[@]}" >&2
     echo "tie or drop each child before tying its parent." >&2
     exit 1
   fi
 
-  local canonical
+  local canonical parent_dir
   canonical="$(strip_state_suffix "$(basename "$src")")"
-  local dest="$LOOM_DIR/tied/$canonical"
+  parent_dir="$(dirname "$src")"
+  local dest
+  if [[ "$parent_dir" == "$LOOM_DIR/threads" ]]; then
+    dest="$LOOM_DIR/tied/$canonical"
+  else
+    dest="$parent_dir/$canonical.tied"
+  fi
   [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  write_completed_at "$src"
   mv "$src" "$dest"
   echo "tied $canonical"
 }
@@ -329,14 +445,13 @@ cmd_tie() {
 print_stitch_tree() {
   local dir="$1"
   local prefix="${2:-}"
+  local abandoned="${3:-false}"
   local entries=()
   local entry
-  shopt -s nullglob
-  for entry in "$dir"/*; do
-    [[ -d "$entry" ]] || continue
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
     entries+=("$entry")
-  done
-  shopt -u nullglob
+  done < <(recognized_children "$dir")
 
   local count="${#entries[@]}"
   local i=0
@@ -353,43 +468,56 @@ print_stitch_tree() {
     local tag=""
     local state
     state="$(state_of_name "$name")"
-    if [[ "$state" != plain ]]; then
+    local child_abandoned="$abandoned"
+    if [[ "$abandoned" == true ]]; then
+      tag=" (abandoned)"
+    elif [[ "$state" != plain ]]; then
       tag=" ($(state_label "$state"))"
-    elif has_child_dirs "$entry"; then
+      if [[ "$state" == dropped ]]; then
+        child_abandoned=true
+      fi
+    elif has_unresolved_children "$entry"; then
       :
     else
       tag=" (loose end)"
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
-    print_stitch_tree "$entry" "$prefix$child_prefix"
+    print_stitch_tree "$entry" "$prefix$child_prefix" "$child_abandoned"
   done
 }
 
-has_child_dirs() {
+has_unresolved_children() {
   local dir="$1"
-  local child
-  shopt -s nullglob
-  for child in "$dir"/*/; do
-    shopt -u nullglob
-    return 0
-  done
-  shopt -u nullglob
+  local child state
+  while IFS= read -r child; do
+    [[ -n "$child" ]] || continue
+    state="$(state_of_name "$(basename "$child")")"
+    if [[ "$state" != tied && "$state" != dropped ]]; then
+      return 0
+    fi
+  done < <(recognized_children "$dir")
   return 1
 }
 
 list_goals() {
-  find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+  local dir
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    basename "$dir"
+  done < <(recognized_children "$LOOM_DIR/threads")
 }
 
 list_loose_ends() {
-  find "$LOOM_DIR/threads" -mindepth 1 -type d | while read -r dir; do
-    local base
+  local dir base
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
     base="$(basename "$dir")"
     [[ "$(state_of_name "$base")" == plain ]] || continue
-    if ! has_child_dirs "$dir"; then
+    has_terminal_ancestor "$dir" && continue
+    if ! has_unresolved_children "$dir"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
-  done | sort
+  done < <(walk_recognized "$LOOM_DIR/threads")
 }
 
 list_claimed() {
@@ -406,23 +534,56 @@ list_tending() {
 
 list_by_state() {
   local state="$1" scope="${2:-any}"
-  local maxdepth=()
-  if [[ "$scope" == goal ]]; then
-    maxdepth=(-maxdepth 1)
-  fi
-
-  find "$LOOM_DIR/threads" -mindepth 1 "${maxdepth[@]}" -type d -name "*.$state" | while read -r dir; do
+  local dir
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    [[ "$(state_of_name "$(basename "$dir")")" == "$state" ]] || continue
+    has_terminal_ancestor "$dir" && continue
+    if [[ "$scope" == goal && "$(dirname "$dir")" != "$LOOM_DIR/threads" ]]; then
+      continue
+    fi
     printf '%s\n' "${dir#$LOOM_DIR/threads/}"
-  done | sort
+  done < <(walk_recognized "$LOOM_DIR/threads")
 }
 
 count_entries() {
   local dir="$1"
-  find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '
+  local count=0 entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    count=$((count + 1))
+  done < <(recognized_children "$dir")
+  printf '%s\n' "$count"
+}
+
+validate_unique_ids() {
+  local dir id
+  local failed=0
+  declare -A first_path=()
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    id="$(strip_state_suffix "$(basename "$dir")")"
+    if ! is_valid_id "$id"; then
+      echo "error: malformed stitch directory '${dir#$LOOM_DIR/}'" >&2
+      failed=1
+      continue
+    fi
+    if [[ -n "${first_path[$id]:-}" ]]; then
+      echo "error: duplicate stitch id '$id':" >&2
+      printf '  - %s\n  - %s\n' \
+        "${first_path[$id]#$LOOM_DIR/}" "${dir#$LOOM_DIR/}" >&2
+      failed=1
+    else
+      first_path["$id"]="$dir"
+    fi
+  done < <(walk_all_stitches)
+  (( failed == 0 ))
 }
 
 cmd_status() {
   require_loom
+  local health=0
+  validate_unique_ids || health=1
 
   echo "🎯 goal stitches"
   if [[ -n "$(list_goals)" ]]; then
@@ -473,7 +634,7 @@ cmd_status() {
 
   echo
   echo "🌳 tree"
-  if find "$LOOM_DIR/threads" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+  if [[ -n "$(recognized_children "$LOOM_DIR/threads")" ]]; then
     print_stitch_tree "$LOOM_DIR/threads"
   else
     echo "(empty)"
@@ -482,6 +643,7 @@ cmd_status() {
   echo
   printf '✅ tied: %s\n' "$(count_entries "$LOOM_DIR/tied")"
   printf '🗑️  dropped: %s\n' "$(count_entries "$LOOM_DIR/dropped")"
+  return "$health"
 }
 
 cmd_loose_ends() {
@@ -536,13 +698,28 @@ cmd_drop() {
       ;;
   esac
 
-  local canonical
-  canonical="$(strip_state_suffix "$(basename "$src")")"
-  local dest="$LOOM_DIR/dropped/$canonical"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
-  mv "$src" "$dest"
+  local direct_state
+  direct_state="$(state_of_name "$(basename "$src")")"
+  [[ "$direct_state" != tied ]] || die "cannot drop a tied stitch"
+  if [[ "$direct_state" == dropped ]]; then
+    echo "already dropped: $id"
+    return 0
+  fi
+  has_terminal_ancestor "$src" &&
+    die "cannot drop abandoned stitch '$id' beneath a terminal ancestor"
 
-  local reason_file="$LOOM_DIR/dropped/$canonical.reason.md"
+  local canonical parent_dir
+  canonical="$(strip_state_suffix "$(basename "$src")")"
+  parent_dir="$(dirname "$src")"
+  local dest
+  if [[ "$parent_dir" == "$LOOM_DIR/threads" ]]; then
+    dest="$LOOM_DIR/dropped/$canonical"
+  else
+    dest="$parent_dir/$canonical.dropped"
+  fi
+  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+
+  local reason_file="$src/reason.md"
   {
     echo "# why $canonical was dropped"
     echo
@@ -552,10 +729,12 @@ cmd_drop() {
       echo "Add the reason here."
     fi
   } > "$reason_file"
+  write_completed_at "$src"
+  mv "$src" "$dest"
 
   echo "dropped $canonical"
   if (( $# == 0 )); then
-    echo "next: read, then edit $reason_file (agent harnesses refuse to overwrite unread files)"
+    echo "next: read, then edit $dest/reason.md (agent harnesses refuse to overwrite unread files)"
   fi
 }
 
@@ -565,14 +744,11 @@ sweep_dir() {
   local entry name
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
+    [[ -d "$entry" && -f "$entry/instructions.md" ]] || continue
     name="$(basename "$entry")"
     rm -rf -- "$entry"
-    if [[ "$kind" == "dropped" && -e "$dir/$name.reason.md" ]]; then
-      rm -f -- "$dir/$name.reason.md"
-    fi
     printf 'swept %s %s\n' "$kind" "$name"
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$days" \
-             ! -name '*.reason.md' | sort)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -mtime +"$days" | sort)
 }
 
 cmd_sweep() {

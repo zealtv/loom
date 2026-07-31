@@ -26,7 +26,9 @@ This copies `loom` and `README.md` into the
 project's newly created `.loom/` directory, then runs `./loom init` to seed the
 trays.
 
-`init` creates `threads/`, `tied/`, and `dropped/` next to itself.
+For a fresh loom, `init` creates `threads/`, `tied/`, and `dropped/` next to
+itself and writes `format-version` with value `2`. It does not mark a
+markerless loom containing existing history as v2.
 `loom.sh` operates on the `.loom/` directory it lives in, so each copy is self-contained.
 
 
@@ -52,7 +54,8 @@ A stitch is a directory with an `instructions.md` file.
 ```
 
 * Top-level entries in `threads/` are goal stitches — one per thread.
-* Children are the decomposition.
+* Only immediate child directories containing `instructions.md` are
+  decomposition children. Other directories are opaque supporting material.
 * A stitch has zero or one parent.
 * Threads may branch.
 
@@ -62,8 +65,14 @@ A stitch is a directory with an `instructions.md` file.
 2. Claim by suffix: `stitch-001/` → `stitch-001.stitching/`. Only loose ends can be claimed.
 3. Wait by suffix: `stitch-001/` → `stitch-001.waiting/`. A waiting stitch is a loose end blocked on something external.
 4. Tend by suffix: `parent/` → `parent.tending/`. A tended stitch has children and a visible steward; it does not lock its branch.
-5. Tie off by move: move a stitch to `tied/`. A stitch can only be tied off when all its children are tied or dropped.
-6. Drop by move: move a stitch to `dropped/` and write `stitch-001.reason.md`.
+5. Tie off in place: a child becomes `stitch-001.tied/`; a completed goal and
+   its whole tree move to `tied/stitch-001/`. A stitch can only be tied off
+   when all its children are tied or dropped.
+6. Drop in place: a child becomes `stitch-001.dropped/`; a dropped goal and
+   its whole tree move to `dropped/stitch-001/`. The stitch contains
+   `reason.md`.
+7. Every tie or drop writes `completed-at` in local ISO-8601 seconds before
+   the terminal rename or move.
 
 The file system is the protocol.
 
@@ -120,7 +129,11 @@ Unnumbered siblings mean *any order is fine*. If you find yourself explaining pr
 
 ## Artifacts
 
-Notes, logs, decisions, intermediate files — put them inside the stitch directory. They travel with the stitch into `tied/` or `dropped/`, leaving a durable record of what happened.
+Notes, logs, decisions, intermediate files — put them inside the stitch
+directory. Supporting directories do not become stitches merely because they
+contain deeper directories or files named `instructions.md`. Artifacts travel
+with retained terminal children and with the complete goal archive, leaving a
+durable record of what happened.
 
 ## instructions.md
 
@@ -153,7 +166,7 @@ It can contain:
 ./loom.sh waiting
 ./loom.sh next
 ./loom.sh status
-./loom.sh sweep [days]   # remove tied/dropped older than N days (default 14); prints one line per item
+./loom.sh sweep [days]   # remove whole goal archives older than N days (default 14)
 ```
 
 ## Verification
