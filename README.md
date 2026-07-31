@@ -16,20 +16,37 @@ When you open `.loom/threads/`, you are looking at the work you have on the loom
 
 ## Quickstart
 
-To install from GitHub run:
+Install the released v2 files into the current repository:
 
 ```sh
-mkdir -p .loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/.loom/loom.sh -o .loom/loom && curl -fsSL https://raw.githubusercontent.com/zealtv/loom/main/README.md -o .loom/README.md && chmod +x .loom/loom && (cd .loom && ./loom init)
+loom_source="$(mktemp -d)"
+git clone --depth 1 --branch v2.0.0 https://github.com/zealtv/loom.git "$loom_source"
+"$loom_source/install.sh" "$PWD"
 ```
 
-This copies `loom` and `README.md` into the
-project's newly created `.loom/` directory, then runs `./loom init` to seed the
-trays.
+This copies `loom.sh`, `README.md`, and the v2 protocol document into the
+project's `.loom/` directory, then runs `.loom/loom.sh init`.
 
 For a fresh loom, `init` creates `threads/`, `tied/`, and `dropped/` next to
 itself and writes `format-version` with value `2`. It does not mark a
 markerless loom containing existing history as v2.
-`loom.sh` operates on the `.loom/` directory it lives in, so each copy is self-contained.
+`loom.sh` operates on the `.loom/` directory it lives in, so each copy is
+self-contained.
+
+Installing over an existing markerless v1 loom updates only the executable and
+documentation; it does not migrate task state or write `format-version`.
+Inspect and run the explicit migration after taking a backup:
+
+```sh
+.loom/loom.sh migrate-v2 --dry-run
+.loom/loom.sh migrate-v2
+```
+
+From a local clone of Loom, the equivalent install is:
+
+```sh
+./install.sh /path/to/host-repository
+```
 
 
 ## What a loom is for
@@ -258,7 +275,7 @@ It can contain:
 
 ## Commands
 
-```
+```text
 ./loom.sh init
 ./loom.sh new <stitch-id> [parent-stitch-id]
 ./loom.sh claim <stitch-id>
@@ -283,6 +300,11 @@ It can contain:
 ./loom.sh sweep [days]   # remove whole goal archives older than N days (default 14)
 ```
 
+`status`, `next`, `loose-ends`, `waiting`, `tending`, and both `map` forms are
+read-only. Lifecycle, queue, migration, and sweep commands mutate only the
+`.loom/` beside the invoked script. Run commands through that deployed copy;
+the examples above assume the current directory is `.loom/`.
+
 ## Verification
 
 Run the complete test entry point from the repository root:
@@ -291,10 +313,7 @@ Run the complete test entry point from the repository root:
 ./test/run.sh
 ```
 
-The runner preserves the current lifecycle coverage and prints a loud skip for
-each not-yet-implemented v2 stage. Set `LOOM_V2_STAGE=<stage-number>` while
-implementing a stage to enable its contract tests and all earlier stages.
-
-The frozen format contract is
-[`docs/protocol-v2.md`](docs/protocol-v2.md). The test runner stages later v2
-features independently while keeping every implemented stage covered.
+The runner exercises the lifecycle suite, every v2 protocol stage, fresh
+installation, and disposable v1 migration acceptance. The authoritative format
+contract is
+[`docs/protocol-v2.md`](docs/protocol-v2.md).

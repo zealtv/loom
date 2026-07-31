@@ -2,8 +2,8 @@
 # usage: ./install.sh <host-dir>
 # Lays down a .loom/ at the host directory — a sanctioned standalone install
 # for scopes that are not delivered by any bundle (a workspace root, a fleet
-# root). Idempotent: re-running repairs loom.sh and README.md and re-seeds
-# missing trays; it never touches tray contents.
+# root). Idempotent: re-running repairs the executable and documentation and
+# re-seeds missing trays; it never migrates or edits tray contents.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +15,8 @@ mkdir -p "$dest"
 cp -f "$REPO_DIR/.loom/loom.sh" "$dest/loom.sh"
 chmod +x "$dest/loom.sh"
 cp -f "$REPO_DIR/README.md" "$dest/README.md"
+mkdir -p "$dest/docs"
+cp -f "$REPO_DIR/docs/protocol-v2.md" "$dest/docs/protocol-v2.md"
 "$dest/loom.sh" init
 
 echo "installed $dest"

@@ -39,7 +39,7 @@ new_test_loom() {
 require_v2_stage() {
   local required="$1"
   local name="$2"
-  local enabled="${LOOM_V2_STAGE:-1}"
+  local enabled="${LOOM_V2_STAGE:-7}"
 
   [[ "$enabled" =~ ^[0-9]+$ ]] ||
     fail "LOOM_V2_STAGE must be a non-negative integer"

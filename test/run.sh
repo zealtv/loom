@@ -12,6 +12,7 @@ tests=(
   v2-queue.sh
   v2-migration.sh
   v2-map.sh
+  v2-release-acceptance.sh
 )
 
 for test_file in "${tests[@]}"; do

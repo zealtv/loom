@@ -30,13 +30,18 @@ usage:
 
 notes:
   - this script operates on the .loom/ directory it lives in
+  - format v2 is declared by a regular format-version file containing 2
   - stitches are directories with an instructions.md file
   - root entries in .loom/threads/ are goal stitches
-  - child stitches are the decomposition of their parent
+  - only immediate child directories with instructions.md are decomposition
   - a loose end is a plain stitch whose children and hard dependencies resolve
   - queue order is a sparse preference; blocked entries never block ready work
   - .stitching means claimed; .waiting explicitly parks a stitch and its subtree
   - .tending means a child-bearing stitch has a steward; children stay claimable
+  - child completion is retained in place; only complete goals enter archive trays
+  - tie/drop write completed-at; drop also keeps reason.md inside the stitch
+  - map and map --json are read-only derived views
+  - markerless non-empty looms require an explicit migrate-v2 after dry-run
 USAGE
 }
 
