@@ -26,7 +26,7 @@ notes:
   - stitches are directories with an instructions.md file
   - root entries in .loom/threads/ are goal stitches
   - child stitches are the decomposition of their parent
-  - a stitch with no children is a loose end — the work ready now
+  - a loose end is a plain stitch whose children and hard dependencies resolve
   - .stitching means claimed; .waiting explicitly parks a stitch and its subtree
   - .tending means a child-bearing stitch has a steward; children stay claimable
 USAGE
@@ -125,8 +125,361 @@ walk_all_stitches() {
   done
 }
 
+INDEX_BUILT=false
+INDEX_ERRORS=()
+INDEX_CYCLES=()
+EDGE_DEPENDENTS=()
+EDGE_TARGETS=()
+EDGE_STATES=()
+EDGE_CAUSES=()
+declare -A INDEX_COUNT=()
+declare -A INDEX_PATH=()
+declare -A INDEX_STATE=()
+declare -A INDEX_DIRECT_STATE=()
+declare -A INDEX_ROOT=()
+declare -A INDEX_PARENT=()
+declare -A INDEX_ANCESTORS=()
+declare -A INDEX_WAITING_ANCESTOR=()
+declare -A INDEX_TERMINAL_ANCESTOR=()
+declare -A INDEX_UNRESOLVED_CHILDREN=()
+declare -A INDEX_INVALID=()
+declare -A INDEX_CYCLIC=()
+
+reset_index() {
+  INDEX_BUILT=false
+  INDEX_ERRORS=()
+  INDEX_CYCLES=()
+  EDGE_DEPENDENTS=()
+  EDGE_TARGETS=()
+  EDGE_STATES=()
+  EDGE_CAUSES=()
+  INDEX_COUNT=()
+  INDEX_PATH=()
+  INDEX_STATE=()
+  INDEX_DIRECT_STATE=()
+  INDEX_ROOT=()
+  INDEX_PARENT=()
+  INDEX_ANCESTORS=()
+  INDEX_WAITING_ANCESTOR=()
+  INDEX_TERMINAL_ANCESTOR=()
+  INDEX_UNRESOLVED_CHILDREN=()
+  INDEX_INVALID=()
+  INDEX_CYCLIC=()
+}
+
+index_effective_state() {
+  local dir="$1" direct="$2"
+  if [[ "$direct" == tied || "$direct" == dropped ]]; then
+    printf '%s\n' "$direct"
+    return
+  fi
+
+  case "$dir" in
+    "$LOOM_DIR/tied"/*)
+      [[ "$(dirname "$dir")" == "$LOOM_DIR/tied" ]] &&
+        { printf 'tied\n'; return; }
+      ;;
+    "$LOOM_DIR/dropped"/*)
+      [[ "$(dirname "$dir")" == "$LOOM_DIR/dropped" ]] &&
+        { printf 'dropped\n'; return; }
+      printf 'abandoned\n'
+      return
+      ;;
+  esac
+
+  local parent
+  parent="$(dirname "$dir")"
+  while [[ "$parent" != "$LOOM_DIR/threads" &&
+           "$parent" != "$LOOM_DIR/tied" &&
+           "$parent" != "$LOOM_DIR/dropped" ]]; do
+    if [[ "$(state_of_name "$(basename "$parent")")" == dropped ]]; then
+      printf 'abandoned\n'
+      return
+    fi
+    parent="$(dirname "$parent")"
+  done
+  printf '%s\n' "$direct"
+}
+
+index_add_edge() {
+  EDGE_DEPENDENTS+=("$1")
+  EDGE_TARGETS+=("$2")
+  EDGE_STATES+=("$3")
+  EDGE_CAUSES+=("$4")
+}
+
+index_detect_cycles() {
+  local result kind members member
+  while IFS=$'\t' read -r kind members; do
+    [[ "$kind" == C && -n "$members" ]] || continue
+    INDEX_CYCLES+=("$members")
+    IFS=',' read -ra cycle_members <<< "$members"
+    for member in "${cycle_members[@]}"; do
+      INDEX_CYCLIC["$member"]=1
+    done
+  done < <(
+    {
+      for member in "${!INDEX_COUNT[@]}"; do
+        [[ "${INDEX_COUNT[$member]}" == 1 ]] &&
+          printf 'N\t%s\n' "$member"
+      done
+      local i
+      for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+        [[ -n "${INDEX_COUNT[${EDGE_DEPENDENTS[$i]}]:-}" &&
+           "${INDEX_COUNT[${EDGE_DEPENDENTS[$i]}]}" == 1 &&
+           -n "${INDEX_COUNT[${EDGE_TARGETS[$i]}]:-}" &&
+           "${INDEX_COUNT[${EDGE_TARGETS[$i]}]}" == 1 ]] || continue
+        printf 'E\t%s\t%s\n' \
+          "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}"
+      done
+    } | sort | awk -F '\t' '
+      function visit(v,    count, parts, i, w, n, j, tmp, line) {
+        next_index++
+        dfs_index[v] = next_index
+        low[v] = next_index
+        stack[++stack_size] = v
+        on_stack[v] = 1
+
+        count = split(edges[v], parts, "\034")
+        for (i = 1; i <= count; i++) {
+          w = parts[i]
+          if (w == "")
+            continue
+          if (!(w in dfs_index)) {
+            visit(w)
+            if (low[w] < low[v])
+              low[v] = low[w]
+          } else if (on_stack[w] && dfs_index[w] < low[v]) {
+            low[v] = dfs_index[w]
+          }
+        }
+
+        if (low[v] == dfs_index[v]) {
+          n = 0
+          do {
+            w = stack[stack_size--]
+            on_stack[w] = 0
+            component[++n] = w
+          } while (w != v)
+          if (n > 1 || self_edge[v]) {
+            for (i = 1; i <= n; i++)
+              for (j = i + 1; j <= n; j++)
+                if (component[j] < component[i]) {
+                  tmp = component[i]
+                  component[i] = component[j]
+                  component[j] = tmp
+                }
+            line = component[1]
+            for (i = 2; i <= n; i++)
+              line = line "," component[i]
+            cycles[line] = 1
+          }
+          for (i = 1; i <= n; i++)
+            delete component[i]
+        }
+      }
+      $1 == "N" { nodes[$2] = 1 }
+      $1 == "E" {
+        nodes[$2] = nodes[$3] = 1
+        edges[$2] = edges[$2] "\034" $3
+        if ($2 == $3)
+          self_edge[$2] = 1
+      }
+      END {
+        for (node in nodes)
+          if (!(node in dfs_index))
+            visit(node)
+        for (cycle in cycles)
+          print "C\t" cycle
+      }
+    ' | sort
+  )
+}
+
+build_index() {
+  reset_index
+  local dir name id direct state relative root parent ancestors cursor
+  local immediate_parent waiting_ancestor terminal_ancestor
+  local all_paths=()
+
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    all_paths+=("$dir")
+    name="$(basename "$dir")"
+    id="$(strip_state_suffix "$name")"
+    relative="${dir#$LOOM_DIR/}"
+    if ! is_valid_id "$id"; then
+      INDEX_ERRORS+=("malformed stitch directory '$relative'")
+      continue
+    fi
+
+    INDEX_COUNT["$id"]=$(( ${INDEX_COUNT[$id]:-0} + 1 ))
+    if [[ "${INDEX_COUNT[$id]}" == 1 ]]; then
+      direct="$(state_of_name "$name")"
+      state="$(index_effective_state "$dir" "$direct")"
+      INDEX_PATH["$id"]="$dir"
+      INDEX_DIRECT_STATE["$id"]="$direct"
+      INDEX_STATE["$id"]="$state"
+
+      cursor="$dir"
+      ancestors=""
+      parent=""
+      immediate_parent=""
+      waiting_ancestor=""
+      terminal_ancestor=""
+      root="$id"
+      while :; do
+        cursor="$(dirname "$cursor")"
+        case "$cursor" in
+          "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped")
+            break
+            ;;
+        esac
+        parent="$(strip_state_suffix "$(basename "$cursor")")"
+        [[ -n "$immediate_parent" ]] || immediate_parent="$parent"
+        if [[ -z "$waiting_ancestor" &&
+              "$(state_of_name "$(basename "$cursor")")" == waiting ]]; then
+          waiting_ancestor="$cursor"
+        fi
+        case "$(state_of_name "$(basename "$cursor")")" in
+          tied|dropped)
+            [[ -n "$terminal_ancestor" ]] || terminal_ancestor="$cursor"
+            ;;
+        esac
+        ancestors="${parent}${ancestors:+,$ancestors}"
+        root="$parent"
+      done
+      INDEX_PARENT["$id"]="$immediate_parent"
+      INDEX_ROOT["$id"]="$root"
+      INDEX_ANCESTORS["$id"]="$ancestors"
+      INDEX_WAITING_ANCESTOR["$id"]="$waiting_ancestor"
+      INDEX_TERMINAL_ANCESTOR["$id"]="$terminal_ancestor"
+    else
+      INDEX_INVALID["$id"]=1
+      INDEX_ERRORS+=("duplicate stitch id '$id': '${INDEX_PATH[$id]#$LOOM_DIR/}' and '$relative'")
+    fi
+  done < <(walk_all_stitches)
+
+  local child_parent child_state
+  for dir in "${all_paths[@]}"; do
+    child_parent="$(dirname "$dir")"
+    case "$child_parent" in
+      "$LOOM_DIR/threads"|"$LOOM_DIR/tied"|"$LOOM_DIR/dropped")
+        continue
+        ;;
+    esac
+    parent="$(strip_state_suffix "$(basename "$child_parent")")"
+    is_valid_id "$parent" || continue
+    child_state="$(state_of_name "$(basename "$dir")")"
+    if [[ "$child_state" != tied && "$child_state" != dropped ]]; then
+      INDEX_UNRESOLVED_CHILDREN["$parent"]=$(( ${INDEX_UNRESOLVED_CHILDREN[$parent]:-0} + 1 ))
+    fi
+  done
+
+  local needs entry target target_count edge_state cause
+  for dir in "${all_paths[@]}"; do
+    id="$(strip_state_suffix "$(basename "$dir")")"
+    is_valid_id "$id" || continue
+    needs="$dir/needs"
+    if [[ -e "$needs" && ! -d "$needs" ]]; then
+      INDEX_ERRORS+=("invalid dependency storage for '$id': needs must be a directory")
+      INDEX_INVALID["$id"]=1
+      continue
+    fi
+    [[ -d "$needs" ]] || continue
+    shopt -s nullglob dotglob
+    for entry in "$needs"/*; do
+      [[ "$(basename "$entry")" != "." && "$(basename "$entry")" != ".." ]] ||
+        continue
+      target="$(basename "$entry")"
+      if [[ ! -f "$entry" || -L "$entry" ]]; then
+        INDEX_ERRORS+=("invalid dependency entry for '$id': every immediate needs/ entry must be a regular file")
+        INDEX_INVALID["$id"]=1
+        continue
+      fi
+      if ! is_valid_id "$target"; then
+        INDEX_ERRORS+=("invalid dependency '$id -> $target': invalid target id")
+        INDEX_INVALID["$id"]=1
+        continue
+      fi
+
+      edge_state=blocked
+      cause=""
+      target_count="${INDEX_COUNT[$target]:-0}"
+      if [[ "$target" == "$id" ]]; then
+        INDEX_ERRORS+=("invalid self-dependency '$id -> $target'")
+        INDEX_INVALID["$id"]=1
+      fi
+      if [[ "$target_count" == 0 ]]; then
+        edge_state=broken
+        cause=missing
+      elif [[ "$target_count" != 1 ]]; then
+        edge_state=broken
+        cause=ambiguous
+      else
+        case "${INDEX_STATE[$target]}" in
+          tied) edge_state=satisfied ;;
+          dropped|abandoned)
+            edge_state=broken
+            cause=dropped
+            ;;
+          *) edge_state=blocked ;;
+        esac
+      fi
+      index_add_edge "$id" "$target" "$edge_state" "$cause"
+    done
+    shopt -u nullglob dotglob
+  done
+
+  index_detect_cycles
+  INDEX_BUILT=true
+}
+
+ensure_index() {
+  [[ "$INDEX_BUILT" == true ]] || build_index
+}
+
+index_path_for_id() {
+  local id="$1"
+  ensure_index
+  local count="${INDEX_COUNT[$id]:-0}"
+  (( count > 0 )) || return 1
+  if (( count > 1 )); then
+    die "multiple stitches found for id '$id'"
+  fi
+  printf '%s\n' "${INDEX_PATH[$id]}"
+}
+
+dependencies_ready() {
+  local id="$1" i
+  [[ -z "${INDEX_INVALID[$id]:-}" ]] || return 1
+  [[ -z "${INDEX_CYCLIC[$id]:-}" ]] || return 1
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_DEPENDENTS[$i]}" == "$id" ]] || continue
+    [[ "${EDGE_STATES[$i]}" == satisfied ]] || return 1
+  done
+  return 0
+}
+
+is_effectively_ready() {
+  local id="$1" dir="${INDEX_PATH[$1]:-}"
+  [[ -n "$dir" && "${INDEX_COUNT[$id]:-0}" == 1 ]] || return 1
+  [[ "${INDEX_DIRECT_STATE[$id]}" == plain ]] || return 1
+  [[ "${INDEX_STATE[$id]}" == plain ]] || return 1
+  [[ "$dir" == "$LOOM_DIR/threads/"* ]] || return 1
+  [[ -z "${INDEX_WAITING_ANCESTOR[$id]:-}" ]] || return 1
+  (( ${INDEX_UNRESOLVED_CHILDREN[$id]:-0} == 0 )) || return 1
+  dependencies_ready "$id"
+}
+
 has_terminal_ancestor() {
   local dir="$1"
+  if [[ "$INDEX_BUILT" == true ]]; then
+    local indexed_id
+    indexed_id="$(strip_state_suffix "$(basename "$dir")")"
+    [[ -n "${INDEX_TERMINAL_ANCESTOR[$indexed_id]:-}" ]]
+    return
+  fi
   local parent
   parent="$(dirname "$dir")"
   while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
@@ -140,6 +493,13 @@ has_terminal_ancestor() {
 
 has_waiting_ancestor() {
   local dir="$1"
+  if [[ "$INDEX_BUILT" == true ]]; then
+    local indexed_id
+    indexed_id="$(strip_state_suffix "$(basename "$dir")")"
+    [[ -n "${INDEX_WAITING_ANCESTOR[$indexed_id]:-}" ]] || return 1
+    printf '%s\n' "${INDEX_WAITING_ANCESTOR[$indexed_id]}"
+    return 0
+  fi
   local parent
   parent="$(dirname "$dir")"
   while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
@@ -216,36 +576,15 @@ set_stitch_state() {
   echo "$output $id"
 }
 
-find_stitch_anywhere() {
-  local id="$1"
-  local dir
-  while IFS= read -r dir; do
-    [[ -n "$dir" ]] || continue
-    if [[ "$(strip_state_suffix "$(basename "$dir")")" == "$id" ]]; then
-      printf '%s\n' "$dir"
-    fi
-  done < <(walk_all_stitches)
-}
-
 find_unique_stitch_anywhere() {
   local id="$1"
-  local matches
-  mapfile -t matches < <(find_stitch_anywhere "$id")
-  if (( ${#matches[@]} == 0 )); then
-    return 1
-  fi
-  if (( ${#matches[@]} > 1 )); then
-    printf '%s\n' "${matches[@]}" >&2
-    die "multiple stitches found for id '$id'"
-  fi
-  printf '%s\n' "${matches[0]}"
+  index_path_for_id "$id"
 }
 
 ensure_unique_new_id() {
   local id="$1"
-  local matches
-  mapfile -t matches < <(find_stitch_anywhere "$id")
-  if (( ${#matches[@]} > 0 )); then
+  ensure_index
+  if (( ${INDEX_COUNT[$id]:-0} > 0 )); then
     die "stitch '$id' already exists"
   fi
 }
@@ -287,6 +626,7 @@ cmd_init() {
 
 cmd_new() {
   require_loom
+  build_index
   local id="${1:-}"
   local parent_id="${2:-}"
   [[ -n "$id" ]] || die "new requires <stitch-id>"
@@ -339,6 +679,7 @@ cmd_new() {
 
 cmd_claim() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "claim requires <stitch-id>"
   validate_id "$id"
@@ -354,11 +695,16 @@ cmd_claim() {
     waiting_id="$(strip_state_suffix "$(basename "$waiting_ancestor")")"
     die "'$id' is beneath waiting stitch '$waiting_id'. run 'loom resume $waiting_id' first."
   fi
+  if [[ "${INDEX_DIRECT_STATE[$id]}" == plain ]] &&
+     ! dependencies_ready "$id"; then
+    die "'$id' is not ready — dependency blockage, broken dependency, or dependency cycle"
+  fi
   set_stitch_state "$id" stitching loose claim "already stitching" claimed
 }
 
 cmd_tend() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "tend requires <stitch-id>"
   validate_id "$id"
@@ -367,6 +713,7 @@ cmd_tend() {
 
 cmd_release() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "release requires <stitch-id>"
   validate_id "$id"
@@ -403,6 +750,7 @@ write_completed_at() {
 
 cmd_tie() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "tie requires <stitch-id>"
   validate_id "$id"
@@ -436,6 +784,10 @@ cmd_tie() {
   [[ "$direct_state" != waiting ]] || die "cannot tie a waiting stitch"
   has_terminal_ancestor "$src" &&
     die "cannot tie abandoned stitch '$id' beneath a terminal ancestor"
+  local waiting_ancestor
+  waiting_ancestor="$(has_waiting_ancestor "$src" || true)"
+  [[ -z "$waiting_ancestor" ]] ||
+    die "cannot tie '$id' beneath waiting stitch '$(strip_state_suffix "$(basename "$waiting_ancestor")")'"
 
   local child child_state
   local unresolved=()
@@ -452,6 +804,9 @@ cmd_tie() {
     printf '  - %s\n' "${unresolved[@]}" >&2
     echo "tie or drop each child before tying its parent." >&2
     exit 1
+  fi
+  if ! dependencies_ready "$id"; then
+    die "cannot tie '$id' — dependency blockage, broken dependency, or dependency cycle"
   fi
 
   local canonical parent_dir
@@ -513,9 +868,7 @@ print_stitch_tree() {
       fi
     elif [[ "$waiting_inherited" == true ]]; then
       tag=" (waiting inherited)"
-    elif has_unresolved_children "$entry"; then
-      :
-    else
+    elif is_effectively_ready "$(strip_state_suffix "$name")"; then
       tag=" (loose end)"
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
@@ -526,15 +879,10 @@ print_stitch_tree() {
 
 has_unresolved_children() {
   local dir="$1"
-  local child state
-  while IFS= read -r child; do
-    [[ -n "$child" ]] || continue
-    state="$(state_of_name "$(basename "$child")")"
-    if [[ "$state" != tied && "$state" != dropped ]]; then
-      return 0
-    fi
-  done < <(recognized_children "$dir")
-  return 1
+  ensure_index
+  local id
+  id="$(strip_state_suffix "$(basename "$dir")")"
+  (( ${INDEX_UNRESOLVED_CHILDREN[$id]:-0} > 0 ))
 }
 
 list_goals() {
@@ -546,14 +894,12 @@ list_goals() {
 }
 
 list_loose_ends() {
-  local dir base
+  ensure_index
+  local dir id
   while IFS= read -r dir; do
     [[ -n "$dir" ]] || continue
-    base="$(basename "$dir")"
-    [[ "$(state_of_name "$base")" == plain ]] || continue
-    has_terminal_ancestor "$dir" && continue
-    [[ -n "$(has_waiting_ancestor "$dir" || true)" ]] && continue
-    if ! has_unresolved_children "$dir"; then
+    id="$(strip_state_suffix "$(basename "$dir")")"
+    if is_effectively_ready "$id"; then
       printf '%s\n' "${dir#$LOOM_DIR/threads/}"
     fi
   done < <(walk_recognized "$LOOM_DIR/threads")
@@ -595,34 +941,53 @@ count_entries() {
   printf '%s\n' "$count"
 }
 
-validate_unique_ids() {
-  local dir id
-  local failed=0
-  declare -A first_path=()
-  while IFS= read -r dir; do
-    [[ -n "$dir" ]] || continue
-    id="$(strip_state_suffix "$(basename "$dir")")"
-    if ! is_valid_id "$id"; then
-      echo "error: malformed stitch directory '${dir#$LOOM_DIR/}'" >&2
-      failed=1
-      continue
-    fi
-    if [[ -n "${first_path[$id]:-}" ]]; then
-      echo "error: duplicate stitch id '$id':" >&2
-      printf '  - %s\n  - %s\n' \
-        "${first_path[$id]#$LOOM_DIR/}" "${dir#$LOOM_DIR/}" >&2
-      failed=1
-    else
-      first_path["$id"]="$dir"
-    fi
-  done < <(walk_all_stitches)
-  (( failed == 0 ))
-}
-
 cmd_status() {
   require_loom
+  build_index
   local health=0
-  validate_unique_ids || health=1
+  local diagnostic cycle i
+  if (( ${#INDEX_ERRORS[@]} > 0 )); then
+    health=1
+    echo "❌ structural errors"
+    for diagnostic in "${INDEX_ERRORS[@]}"; do
+      printf -- '- %s\n' "$diagnostic"
+    done
+    echo
+  fi
+
+  local has_broken=false
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_STATES[$i]}" == broken ]] || continue
+    if [[ "$has_broken" == false ]]; then
+      echo "💔 broken dependencies"
+      has_broken=true
+    fi
+    printf -- '- %s -> %s (%s)\n' \
+      "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}" "${EDGE_CAUSES[$i]}"
+    health=1
+  done
+  [[ "$has_broken" == false ]] || echo
+
+  local has_blocked=false
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_STATES[$i]}" == blocked ]] || continue
+    if [[ "$has_blocked" == false ]]; then
+      echo "⛔ blocked dependencies"
+      has_blocked=true
+    fi
+    printf -- '- %s -> %s (unresolved)\n' \
+      "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}"
+  done
+  [[ "$has_blocked" == false ]] || echo
+
+  if (( ${#INDEX_CYCLES[@]} > 0 )); then
+    echo "🔄 dependency cycles"
+    for cycle in "${INDEX_CYCLES[@]}"; do
+      printf -- '- %s\n' "${cycle//,/, }"
+    done
+    echo
+    health=1
+  fi
 
   echo "🎯 goal stitches"
   if [[ -n "$(list_goals)" ]]; then
@@ -687,6 +1052,7 @@ cmd_status() {
 
 cmd_loose_ends() {
   require_loom
+  build_index
   local loose
   loose="$(list_loose_ends)"
   if [[ -n "$loose" ]]; then
@@ -706,11 +1072,15 @@ cmd_tending() {
 
 cmd_next() {
   require_loom
-  list_loose_ends | head -n 1
+  build_index
+  local loose
+  loose="$(list_loose_ends)"
+  [[ -z "$loose" ]] || printf '%s\n' "${loose%%$'\n'*}"
 }
 
 cmd_wait() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "wait requires <stitch-id>"
   validate_id "$id"
@@ -757,6 +1127,7 @@ cmd_wait() {
 
 cmd_resume() {
   require_loom
+  build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "resume requires <stitch-id>"
   validate_id "$id"
@@ -781,6 +1152,7 @@ cmd_resume() {
 
 cmd_drop() {
   require_loom
+  build_index
   local id="${1:-}"
   shift || true
   [[ -n "$id" ]] || die "drop requires <stitch-id>"

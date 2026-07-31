@@ -36,7 +36,10 @@ markerless loom containing existing history as v2.
 
 A loom holds work that has shape.
 
-Every thread has a **goal stitch** at its root — the outcome you want. The goal decomposes into child stitches. A stitch with no children is a **loose end** — a concrete action ready to be worked.
+Every thread has a **goal stitch** at its root — the outcome you want. The
+goal decomposes into child stitches. A **loose end** is a plain stitch whose
+children are resolved, whose hard dependencies are tied, and whose ancestors
+are not waiting — a concrete action ready to be worked.
 
 To work a loom, pick a loose end, tend it, and tie it off. When every sibling of a stitch is resolved, its parent becomes a loose end in turn. You keep tying off up the thread until the goal stitch is tied — then the thread is done.
 
@@ -120,9 +123,24 @@ Keep loose ends small and direct. If a stitch is trying to do too much, split it
 
 Siblings are parallel. A parent waits for its children.
 
-To express *A must happen before B*: make B the parent and place A inside it as a child. A must be tied before B can be tied.
+Nesting means decomposition only. To express *A must finish before B*, create
+an empty regular file named for A's globally unique ID:
 
-When two siblings both need to happen, name them so they sort in the order you want them taken.
+```text
+<B>/needs/<A>
+```
+
+The file contents are reserved and ignored. A tied child or tied archived goal
+satisfies the dependency. Active or waiting targets block B; missing, dropped,
+or ambiguous targets are broken and reported by `status`. Dependency cycles
+are reported once per cycle, and their members are never ready.
+
+`needs/` is supporting material, not decomposition. This lets dependencies
+cross branches and threads and represent fan-out and diamond-shaped work
+without inventing parentage.
+
+When siblings can happen in either order, do not add dependency files between
+them.
 
 ## Ordering
 
