@@ -796,7 +796,15 @@ cmd_init() {
   fi
   local had_v1_entries=false
   loom_has_tray_entries && had_v1_entries=true
-  mkdir -p "$LOOM_DIR/threads" "$LOOM_DIR/tied" "$LOOM_DIR/dropped"
+  mkdir -p "$LOOM_DIR/threads"
+  # An unmigrated v1 loom carrying history is left byte-for-byte alone: init
+  # never touches it, so it does not get seeded either. migrate-v2 seeds the
+  # trays as part of migrating it.
+  if [[ "$state" != v1 || "$had_v1_entries" == false ]]; then
+    ensure_trays
+  else
+    mkdir -p "$LOOM_DIR/tied" "$LOOM_DIR/dropped"
+  fi
   if [[ "$state" == v1 && "$had_v1_entries" == false ]]; then
     local marker_tmp="$LOOM_DIR/.format-version.tmp.$$"
     printf '2\n' > "$marker_tmp"
@@ -936,6 +944,7 @@ write_completed_at() {
 cmd_tie() {
   require_loom
   require_v2_mutation
+  ensure_trays
   build_index
   local id="${1:-}"
   [[ -n "$id" ]] || die "tie requires <stitch-id>"
@@ -1172,6 +1181,31 @@ count_entries() {
     count=$((count + 1))
   done < <(recognized_children "$dir")
   printf '%s\n' "$count"
+}
+
+# Git cannot track an empty directory, so a loom committed before its first tie
+# or drop loses `tied/` and `dropped/` on clone. Nothing notices until the first
+# goal tie, which fails on the terminal move after completed-at is already
+# written. `.gitkeep` keeps an empty tray in the commit; `mkdir -p` heals looms
+# already cloned without one.
+#
+# `.gitkeep` is a plain file, so it is never a recognized child: it does not
+# count as a tray entry, and sweep only removes directories.
+ensure_trays() {
+  local tray
+  for tray in "$LOOM_DIR/tied" "$LOOM_DIR/dropped"; do
+    mkdir -p "$tray"
+    [[ -e "$tray/.gitkeep" || -L "$tray/.gitkeep" ]] || : > "$tray/.gitkeep"
+  done
+}
+
+# Trays that are absent entirely. Reported by status and map, never repaired by
+# them: both are strictly read-only. Emitted in tray-path order.
+missing_trays() {
+  local tray
+  for tray in dropped tied; do
+    [[ -d "$LOOM_DIR/$tray" ]] || printf '%s\n' "$tray"
+  done
 }
 
 json_string() {
@@ -1412,6 +1446,15 @@ map_emit_diagnostics() {
       "dependency cycle: ${cycle//,/, }"
     first=false
   done
+
+  local tray
+  while IFS= read -r tray; do
+    [[ -n "$tray" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    map_emit_diagnostic warning missing_tray \
+      "archive tray '$tray' is missing; a tie or drop of a goal stitch will recreate it"
+    first=false
+  done < <(missing_trays)
 
   while IFS= read -r message; do
     [[ -n "$message" ]] || continue
@@ -1668,6 +1711,19 @@ cmd_status() {
     echo "📋 queue errors"
     for diagnostic in "${QUEUE_ERRORS[@]}"; do
       printf -- '- %s\n' "$diagnostic"
+    done
+    echo
+  fi
+
+  # A warning, not an error: the loom is usable and the next tie or drop
+  # repairs it. Status is read-only and does not repair it here.
+  local tray missing=()
+  mapfile -t missing < <(missing_trays)
+  if (( ${#missing[@]} > 0 )); then
+    echo "⚠️  missing archive trays"
+    for tray in "${missing[@]}"; do
+      printf -- "- %s/ is absent; git cannot track an empty directory, so a clone\n" "$tray"
+      printf -- "  loses it. A tie or drop of a goal stitch recreates it.\n"
     done
     echo
   fi
@@ -2078,6 +2134,7 @@ cmd_resume() {
 cmd_drop() {
   require_loom
   require_v2_mutation
+  ensure_trays
   build_index
   local id="${1:-}"
   shift || true
@@ -2306,6 +2363,7 @@ migration_print_plan() {
       "${MIGRATION_SOURCES[$i]}" "${MIGRATION_DESTINATIONS[$i]}"
   done
   echo "write format-version = 2 (last)"
+  echo "seed tied/ and dropped/ with .gitkeep after marker commit"
   echo "cleanup .migrate-v2-staging after marker commit"
   printf 'summary: active=%s legacy-tied=%s legacy-dropped=%s reasons=%s warnings=%s\n' \
     "$MIGRATION_ACTIVE_COUNT" "$MIGRATION_TIED_COUNT" \
@@ -2459,6 +2517,10 @@ migration_execute() {
   local marker_tmp="$LOOM_DIR/.format-version.tmp.$$"
   printf '2\n' > "$marker_tmp"
   mv "$marker_tmp" "$LOOM_DIR/format-version"
+  # Every flat record has just moved to legacy-v1/, leaving both trays empty.
+  # Seed them after the marker: before it, rollback is still available and must
+  # restore the markerless v1 layout without stray files.
+  ensure_trays
   migration_fail_at after-marker
   rm -rf -- "$stage"
 }
@@ -2591,6 +2653,9 @@ cmd_sweep() {
   [[ "$days" =~ ^[0-9]+$ ]] || die "sweep <days> must be a non-negative integer"
   sweep_dir "$LOOM_DIR/tied" tied "$days"
   sweep_dir "$LOOM_DIR/dropped" dropped "$days"
+  # Sweeping the last archive empties the tray, which would lose it on the next
+  # clone exactly as a pre-first-tie commit does.
+  ensure_trays
 }
 
 main() {

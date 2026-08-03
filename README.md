@@ -79,6 +79,13 @@ A stitch is a directory with an `instructions.md` file.
 * A stitch has zero or one parent.
 * Threads may branch.
 
+`tied/` and `dropped/` each carry a `.gitkeep`. Git cannot track an empty
+directory, so without it a loom committed before its first tie or drop loses
+both trays on clone — and nothing notices until a goal tie fails weeks later.
+The lifecycle commands recreate and reseed the trays as needed, so an
+already-cloned loom heals on its next tie or drop. `status` and `map` report a
+missing tray but never repair one; they are strictly read-only.
+
 ## Rules
 
 1. One stitch, one place.

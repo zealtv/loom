@@ -35,6 +35,8 @@ before_dry_run="$(loom_manifest)"
 dry_output="$("$LOOM" migrate-v2 --dry-run)"
 assert_contains "$dry_output" "old-tied" "dry-run planned moves"
 assert_contains "$dry_output" "old-drop.reason.md" "dry-run reason move"
+assert_contains "$dry_output" "seed tied/ and dropped/ with .gitkeep" \
+  "dry-run must plan the tray seeding"
 after_dry_run="$(loom_manifest)"
 assert_eq "$before_dry_run" "$after_dry_run" "dry-run changed files"
 assert_no_path "$TEST_REPO/.loom/format-version"
@@ -48,6 +50,12 @@ assert_file "$TEST_REPO/.loom/legacy-v1/dropped/old-drop/reason.md"
 assert_no_path "$TEST_REPO/.loom/legacy-v1/tied/old-tied/completed-at"
 assert_eq "preserve me byte-for-byte" \
   "$(<"$TEST_REPO/.loom/threads/active.waiting/artifact.bin")"
+# Migration moves every flat record into legacy-v1/, emptying both trays. They
+# must be seeded, or the migrated loom loses them on its next commit and clone
+# exactly as a pre-first-tie loom does.
+assert_file "$TEST_REPO/.loom/tied/.gitkeep"
+assert_file "$TEST_REPO/.loom/dropped/.gitkeep"
+assert_not_contains "$("$LOOM" status)" "missing archive trays" "migrated loom"
 assert_contains "$("$LOOM" migrate-v2)" "already" \
   "second migration must be a clear no-op"
 
@@ -132,6 +140,10 @@ for failure_point in backup-tied move-tied move-dropped move-reason marker; do
   assert_dir "$TEST_REPO/.loom/tied/old"
   assert_dir "$TEST_REPO/.loom/dropped/gone"
   assert_file "$TEST_REPO/.loom/dropped/gone.reason.md"
+  # Rollback restores the markerless v1 layout. Tray seeding happens after the
+  # marker commits, so it must never leave a seed behind on a rolled-back loom.
+  assert_no_path "$TEST_REPO/.loom/tied/.gitkeep"
+  assert_no_path "$TEST_REPO/.loom/dropped/.gitkeep"
 done
 
 for failure_point in after-backup-tied after-move-tied after-move-dropped \

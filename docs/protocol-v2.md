@@ -41,6 +41,32 @@ The v2-owned entries are:
     dropped/
 ```
 
+### Tray survival
+
+A loom normally lives in a version control repository, and git cannot track an
+empty directory. An empty `tied/` or `dropped/` therefore does not survive a
+commit and clone, and the loss is invisible until the first goal tie or drop
+fails on the terminal move — after `completed-at` has already been written,
+leaving a half-tied record in `threads/`.
+
+Both trays therefore carry a `.gitkeep` placeholder. `init`, `migrate-v2`,
+`tie`, `drop`, and `sweep` ensure both trays exist and are seeded:
+
+* `init` seeds a fresh or already-v2 loom. It does not touch a non-empty
+  markerless v1 loom, which it must leave byte-for-byte unchanged.
+* `migrate-v2` seeds after the format marker commits, because migration moves
+  every flat record into `legacy-v1/` and leaves both trays empty. Seeding
+  after the marker keeps a rolled-back loom free of stray files.
+* `tie` and `drop` seed before writing `completed-at`, which heals a loom
+  already cloned without its trays.
+* `sweep` seeds after pruning, since removing the last archive empties a tray.
+
+`.gitkeep` is a plain file, so it is never a recognised stitch, never counts as
+a tray entry, and is never swept.
+
+Read-only commands never repair a missing tray. They report it: see the
+`missing_tray` diagnostic.
+
 A goal stitch is an immediate child directory of `threads/`, `tied/`, or
 `dropped/` that contains a regular `instructions.md`. A child stitch is only
 an immediate child directory of a recognised stitch that itself contains a
@@ -185,7 +211,8 @@ times.
 `sweep [days]` removes only complete immediate-child goal archives from
 `tied/` and `dropped/`. It never removes an individual terminal descendant or
 anything beneath an active goal. Sweeping history can turn an external
-dependency on a removed ID into a visibly broken missing dependency.
+dependency on a removed ID into a visibly broken missing dependency. Sweeping
+the last archive out of a tray leaves the tray seeded, not empty.
 
 ## Decomposition and readiness
 
@@ -391,7 +418,23 @@ Every diagnostic has `severity` (`warning` or `error`), a stable `code`, a
 human-readable `message`, and nullable `stitch_id` and `target_id`. JSON
 strings use correct JSON escaping. `map --json` remains valid JSON even when
 errors are present and exits non-zero under the same health rules as
-`status`.
+`status`. Only `error` diagnostics affect health; a `warning` never changes an
+exit code.
+
+The codes in use are:
+
+| Code | Severity | Meaning |
+| --- | --- | --- |
+| `broken_dependency` | error | a `needs/` target is missing, dropped, ambiguous, or invalid |
+| `dependency_cycle` | error | a dependency cycle, reported once per cycle |
+| `missing_tray` | warning | `tied/` or `dropped/` is absent; the next tie or drop recreates it |
+| `queue_error` | error | a malformed or unresolvable `queue` entry |
+| `structural_error` | error | a malformed stitch, duplicate ID, or invalid `completed-at` |
+
+Diagnostics are emitted in stable code order, then by the path or ID the
+diagnostic concerns. The code set is open: consumers must tolerate an
+unrecognised `code` rather than treat it as a parse failure. Adding a code is
+therefore not a `schema_version` change; adding or removing a *field* is.
 
 The JSON snapshot is the sole supported integration boundary for future
 viewers. A viewer reads this projection and performs mutations only by

@@ -77,4 +77,31 @@ assert_file "$TEST_REPO/.loom/legacy-v1/dropped/old-drop/reason.md"
 assert_contains "$(<"$TEST_TMP/migrated-map.json")" \
   '"legacy":true' "migrated map legacy label"
 
+# The whole point, end to end: a loom committed before its first tie or drop
+# must still have its trays after a clone, and must tie a goal there without the
+# terminal move failing on a directory git could not carry.
+if command -v git >/dev/null 2>&1; then
+  new_test_repo
+  rm -rf -- "$TEST_REPO/.loom"
+  "$TEST_ROOT/install.sh" "$TEST_REPO" >/dev/null
+  LOOM="$TEST_REPO/.loom/loom.sh"
+  "$LOOM" new survives-clone >/dev/null
+
+  git -C "$TEST_REPO" init -q
+  git -C "$TEST_REPO" config user.email loom@example.invalid
+  git -C "$TEST_REPO" config user.name "Loom Test"
+  git -C "$TEST_REPO" add -A
+  git -C "$TEST_REPO" -c commit.gpgsign=false commit -qm "loom before first tie"
+
+  clone="$TEST_TMP/clone"
+  git clone -q "$TEST_REPO" "$clone"
+  assert_dir "$clone/.loom/tied"
+  assert_dir "$clone/.loom/dropped"
+  assert_not_contains "$("$clone/.loom/loom.sh" status)" \
+    "missing archive trays" "cloned loom"
+  "$clone/.loom/loom.sh" tie survives-clone >/dev/null
+  assert_dir "$clone/.loom/tied/survives-clone"
+  assert_no_path "$clone/.loom/threads/survives-clone"
+fi
+
 echo "v2 release acceptance: ok"

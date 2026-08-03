@@ -166,4 +166,53 @@ assert doc["diagnostics"] == []
 PY
 fi
 
+# A missing archive tray is a warning diagnostic, not an error: the loom is
+# usable, the map stays read-only, and the exit code stays zero.
+new_test_loom
+"$LOOM" new ready >/dev/null
+rm -rf "$TEST_REPO/.loom/dropped"
+missing_json="$("$LOOM" map --json)"
+assert_no_path "$TEST_REPO/.loom/dropped"
+assert_contains "$missing_json" '"code":"missing_tray"' "map diagnostics"
+assert_contains "$missing_json" '"severity":"warning"' "map diagnostics"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$missing_json" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+warnings = [d for d in doc["diagnostics"] if d["code"] == "missing_tray"]
+assert len(warnings) == 1, doc["diagnostics"]
+assert warnings[0]["severity"] == "warning"
+assert warnings[0]["stitch_id"] is None
+assert warnings[0]["target_id"] is None
+assert "dropped" in warnings[0]["message"]
+PY
+fi
+
+# status reports it too, and no read-only command repairs it.
+status_output="$("$LOOM" status)"
+assert_contains "$status_output" "missing archive trays" "status"
+"$LOOM" map >/dev/null
+"$LOOM" next >/dev/null
+"$LOOM" loose-ends >/dev/null
+assert_no_path "$TEST_REPO/.loom/dropped"
+
+# Both trays absent reports both, in tray-path order.
+rm -rf "$TEST_REPO/.loom/tied"
+both_json="$("$LOOM" map --json)"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$both_json" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+codes = [d["code"] for d in doc["diagnostics"]]
+assert codes == ["missing_tray", "missing_tray"], codes
+messages = [d["message"] for d in doc["diagnostics"]]
+assert "'dropped'" in messages[0], messages
+assert "'tied'" in messages[1], messages
+PY
+fi
+
 echo "v2 map: ok"

@@ -94,6 +94,40 @@ touch -t 200001010000 \
   "$TEST_REPO/.loom/tied/archived-old/completed-at"
 "$LOOM" sweep 0 >/dev/null
 assert_no_path "$TEST_REPO/.loom/tied/archived-old"
+# Sweeping the last archive must not leave an untrackable empty tray behind.
+assert_file "$TEST_REPO/.loom/tied/.gitkeep"
+assert_file "$TEST_REPO/.loom/dropped/.gitkeep"
+
+# init seeds both trays so a loom committed before its first tie or drop keeps
+# them through a clone. The seed is a plain file, so it is not a tray entry.
+new_test_loom
+assert_file "$TEST_REPO/.loom/tied/.gitkeep"
+assert_file "$TEST_REPO/.loom/dropped/.gitkeep"
+assert_contains "$("$LOOM" status)" "✅ tied: 0" "seeded tray count"
+assert_contains "$("$LOOM" status)" "🗑️  dropped: 0" "seeded tray count"
+assert_not_contains "$("$LOOM" status)" "missing archive trays" "seeded loom"
+
+# A loom cloned without its trays heals on the next tie instead of failing the
+# terminal move with completed-at already written.
+new_test_loom
+"$LOOM" new cloned-goal >/dev/null
+rm -rf "$TEST_REPO/.loom/tied" "$TEST_REPO/.loom/dropped"
+"$LOOM" tie cloned-goal >/dev/null
+assert_dir "$TEST_REPO/.loom/tied/cloned-goal"
+assert_file "$TEST_REPO/.loom/tied/cloned-goal/completed-at"
+assert_no_path "$TEST_REPO/.loom/threads/cloned-goal"
+assert_file "$TEST_REPO/.loom/dropped/.gitkeep"
+
+# Same for drop, which is the path a migrated loom is most likely to hit first.
+new_test_loom
+"$LOOM" new cloned-drop >/dev/null
+rm -rf "$TEST_REPO/.loom/tied" "$TEST_REPO/.loom/dropped"
+"$LOOM" drop cloned-drop "no longer wanted" >/dev/null
+assert_dir "$TEST_REPO/.loom/dropped/cloned-drop"
+assert_file "$TEST_REPO/.loom/dropped/cloned-drop/reason.md"
+assert_file "$TEST_REPO/.loom/dropped/cloned-drop/completed-at"
+assert_no_path "$TEST_REPO/.loom/threads/cloned-drop"
+assert_file "$TEST_REPO/.loom/tied/.gitkeep"
 
 new_test_loom
 write_instructions "$TEST_REPO/.loom/threads/identity" identity
