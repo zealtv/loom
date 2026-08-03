@@ -7,18 +7,18 @@ usage() {
 usage:
   loom.sh init
   loom.sh new <stitch-id> [parent-stitch-id]
-  loom.sh claim <stitch-id>
-  loom.sh tend <stitch-id>
-  loom.sh release <stitch-id>
-  loom.sh wait <stitch-id>
-  loom.sh resume <stitch-id>
-  loom.sh tie <stitch-id>
-  loom.sh drop <stitch-id> [reason...]
-  loom.sh queue <stitch-id>
-  loom.sh first <stitch-id>
-  loom.sh before <stitch-id> <anchor-stitch-id>
-  loom.sh after <stitch-id> <anchor-stitch-id>
-  loom.sh unqueue <stitch-id>
+  loom.sh claim [--json] <stitch-id>
+  loom.sh tend [--json] <stitch-id>
+  loom.sh release [--json] <stitch-id>
+  loom.sh wait [--json] <stitch-id>
+  loom.sh resume [--json] <stitch-id>
+  loom.sh tie [--json] <stitch-id>
+  loom.sh drop [--json] <stitch-id> [reason...]
+  loom.sh queue [--json] <stitch-id>
+  loom.sh first [--json] <stitch-id>
+  loom.sh before [--json] <stitch-id> <anchor-stitch-id>
+  loom.sh after [--json] <stitch-id> <anchor-stitch-id>
+  loom.sh unqueue [--json] <stitch-id>
   loom.sh loose-ends
   loom.sh tending
   loom.sh waiting
@@ -41,13 +41,144 @@ notes:
   - child completion is retained in place; only complete goals enter archive trays
   - tie/drop write completed-at; drop also keeps reason.md inside the stitch
   - map and map --json are read-only derived views
+  - mutating --json goes before the stitch id and replaces that command's
+    stdout prose with one result object; failures emit one error object
   - markerless non-empty looms require an explicit migrate-v2 after dry-run
 USAGE
 }
 
+# Mutating commands accept --json and then report their result as one JSON
+# object instead of prose. The human output is the default and is unchanged.
+MUTATION_JSON=false
+MUTATION_COMMAND=""
+MUTATION_ARGS=()
+MUTATION_ID=""
+MUTATION_ERROR_CODE=failed
+MUTATION_ERROR_IDS=()
+
 die() {
+  if [[ "$MUTATION_JSON" == true ]]; then
+    mutation_emit_error "$*"
+  fi
   echo "error: $*" >&2
   exit 1
+}
+
+# die with a stable machine-readable code. The code is only emitted under
+# --json; every caller still reads as an ordinary die.
+die_as() {
+  local code="$1"
+  shift
+  MUTATION_ERROR_CODE="$code"
+  die "$@"
+}
+
+# --json is recognised only before the first positional argument, so
+# 'drop <id> <reason...>' keeps a reason that may say anything at all.
+mutation_begin() {
+  MUTATION_COMMAND="$1"
+  shift
+  MUTATION_JSON=false
+  MUTATION_ARGS=()
+  MUTATION_ID=""
+  MUTATION_ERROR_CODE=failed
+  MUTATION_ERROR_IDS=()
+
+  local arg positional=false
+  for arg in "$@"; do
+    if [[ "$positional" == false ]]; then
+      case "$arg" in
+        --json)
+          MUTATION_JSON=true
+          continue
+          ;;
+        --*)
+          die_as usage "$MUTATION_COMMAND accepts only --json"
+          ;;
+      esac
+      positional=true
+    fi
+    MUTATION_ARGS+=("$arg")
+  done
+}
+
+mutation_tray_of() {
+  case "$1" in
+    legacy-v1/tied/*) printf 'legacy-tied' ;;
+    legacy-v1/dropped/*) printf 'legacy-dropped' ;;
+    tied/*) printf 'tied' ;;
+    dropped/*) printf 'dropped' ;;
+    threads/*) printf 'threads' ;;
+  esac
+}
+
+# Read the queue file directly. A mutation must not pay for a second index
+# build to learn the position of the one ID it just touched.
+queue_position_of() {
+  local id="$1" line position=0
+  [[ -f "$LOOM_DIR/queue" ]] || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    position=$((position + 1))
+    if [[ "$line" == "$id" ]]; then
+      printf '%s' "$position"
+      return 0
+    fi
+  done < "$LOOM_DIR/queue"
+}
+
+# The outcome of a mutation, derived from what the command already knows.
+# changed is false for the idempotent no-op cases; path and state are empty
+# only where the stitch is not on disk, which just unqueue's repair path
+# reaches.
+mutation_result() {
+  local id="$1" changed="$2" path="$3" state="$4"
+  shift 4
+  if [[ "$MUTATION_JSON" != true ]]; then
+    printf '%s\n' "$*"
+    return 0
+  fi
+
+  local relative="" tray="" position completed=""
+  if [[ -n "$path" ]]; then
+    relative="${path#"$LOOM_DIR"/}"
+    tray="$(mutation_tray_of "$relative")"
+    [[ ! -f "$path/completed-at" ]] || read -r completed < "$path/completed-at"
+  fi
+  position="$(queue_position_of "$id")"
+
+  printf '{"schema_version":1,"format_version":2,"command":'
+  json_string "$MUTATION_COMMAND"
+  printf ',"ok":true,"changed":%s' "$changed"
+  printf ',"id":'; json_string "$id"
+  printf ',"state":'; json_nullable_string "$state"
+  printf ',"path":'; json_nullable_string "$relative"
+  printf ',"tray":'; json_nullable_string "$tray"
+  if [[ -n "$position" ]]; then
+    printf ',"queue_position":%s' "$position"
+  else
+    printf ',"queue_position":null'
+  fi
+  printf ',"completed_at":'; json_nullable_string "$completed"
+  printf '}\n'
+}
+
+# Errors go to stdout as JSON and stay on stderr as prose: a UI gets a code,
+# a terminal keeps the message it always had.
+mutation_emit_error() {
+  local message="$1" first=true stitch_id
+  printf '{"schema_version":1,"format_version":2,"command":'
+  json_string "$MUTATION_COMMAND"
+  printf ',"ok":false,"id":'; json_nullable_string "$MUTATION_ID"
+  printf ',"error":{"code":'; json_string "$MUTATION_ERROR_CODE"
+  printf ',"message":'; json_string "$message"
+  printf ',"stitch_ids":['
+  for stitch_id in ${MUTATION_ERROR_IDS[@]+"${MUTATION_ERROR_IDS[@]}"}; do
+    [[ "$first" == true ]] || printf ','
+    json_string "$stitch_id"
+    first=false
+  done
+  printf ']}}\n'
 }
 
 require_loom() {
@@ -92,20 +223,20 @@ require_v2_mutation() {
   if [[ -e "$LOOM_DIR/.migrate-v2-staging" ||
         -L "$LOOM_DIR/.migrate-v2-staging" ]]; then
     if [[ "$state" == v2 ]]; then
-      die "v2 migration committed but staging cleanup remains; run 'loom.sh migrate-v2' to finish cleanup"
+      die_as format "v2 migration committed but staging cleanup remains; run 'loom.sh migrate-v2' to finish cleanup"
     fi
-    die "unfinished v2 migration staging exists; run 'loom.sh migrate-v2' to resume or 'loom.sh migrate-v2 --rollback' to restore v1"
+    die_as format "unfinished v2 migration staging exists; run 'loom.sh migrate-v2' to resume or 'loom.sh migrate-v2 --rollback' to restore v1"
   fi
   case "$state" in
     v2) ;;
     v1)
       if loom_has_tray_entries; then
-        die "markerless loom is format v1; inspect with 'loom.sh migrate-v2 --dry-run', then run 'loom.sh migrate-v2'"
+        die_as format "markerless loom is format v1; inspect with 'loom.sh migrate-v2 --dry-run', then run 'loom.sh migrate-v2'"
       fi
-      die "loom has no format marker; run 'loom.sh init' before changing it"
+      die_as format "loom has no format marker; run 'loom.sh init' before changing it"
       ;;
     invalid)
-      die "invalid format-version marker (expected a regular file containing exactly '2')"
+      die_as format "invalid format-version marker (expected a regular file containing exactly '2')"
       ;;
   esac
 }
@@ -123,7 +254,7 @@ is_valid_id() {
 validate_id() {
   local id="$1"
   is_valid_id "$id" ||
-    die "invalid stitch id '$id' (use letters, numbers, ., _, - and no reserved state suffix)"
+    die_as invalid_id "invalid stitch id '$id' (use letters, numbers, ., _, - and no reserved state suffix)"
 }
 
 strip_state_suffix() {
@@ -624,7 +755,7 @@ index_path_for_id() {
   local count="${INDEX_COUNT[$id]:-0}"
   (( count > 0 )) || return 1
   if (( count > 1 )); then
-    die "multiple stitches found for id '$id'"
+    die_as ambiguous "multiple stitches found for id '$id'"
   fi
   printf '%s\n' "${INDEX_PATH[$id]}"
 }
@@ -695,15 +826,15 @@ ensure_under_threads() {
   local dir="$1" id="$2"
   case "$dir" in
     "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
-      die "cannot $3 a tied stitch"
+      die_as terminal "cannot $3 a tied stitch"
       ;;
     "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
-      die "cannot $3 a dropped stitch"
+      die_as terminal "cannot $3 a dropped stitch"
       ;;
     "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
       ;;
     *)
-      die "stitch '$id' is not under threads/"
+      die_as not_under_threads "stitch '$id' is not under threads/"
       ;;
   esac
 }
@@ -713,34 +844,34 @@ set_stitch_state() {
   local existing name current parent_dir dest
 
   existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  [[ -n "$existing" ]] || die_as not_found "stitch '$id' not found"
   ensure_under_threads "$existing" "$id" "$action"
 
   name="$(basename "$existing")"
   current="$(state_of_name "$name")"
   if [[ "$current" == "$new_state" ]]; then
-    echo "$already: $id"
+    mutation_result "$id" false "$existing" "$new_state" "$already: $id"
     return 0
   fi
   if [[ "$current" == tied || "$current" == dropped ]]; then
-    die "cannot $action terminal stitch '$id' ($current)"
+    die_as terminal "cannot $action terminal stitch '$id' ($current)"
   fi
   has_terminal_ancestor "$existing" &&
-    die "cannot $action abandoned stitch '$id' beneath a terminal ancestor"
+    die_as terminal "cannot $action abandoned stitch '$id' beneath a terminal ancestor"
 
   if [[ "$current" == tending ]]; then
-    die "'$id' is tended. release it before you $action it."
+    die_as tended "'$id' is tended. release it before you $action it."
   fi
 
   case "$scope" in
     loose)
       if has_unresolved_children "$existing"; then
-        die "'$id' is not a loose end — it has unresolved children. only loose ends can $action."
+        die_as not_loose_end "'$id' is not a loose end — it has unresolved children. only loose ends can $action."
       fi
       ;;
     parent)
       if ! has_unresolved_children "$existing"; then
-        die "'$id' has no children requiring work. only child-bearing stitches can $action."
+        die_as not_child_bearing "'$id' has no children requiring work. only child-bearing stitches can $action."
       fi
       ;;
     *)
@@ -750,9 +881,9 @@ set_stitch_state() {
 
   parent_dir="$(dirname "$existing")"
   dest="$parent_dir/$id.$new_state"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
   mv "$existing" "$dest"
-  echo "$output $id"
+  mutation_result "$id" true "$dest" "$new_state" "$output $id"
 }
 
 find_unique_stitch_anywhere() {
@@ -868,67 +999,80 @@ cmd_new() {
 }
 
 cmd_claim() {
+  mutation_begin claim "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "claim requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "claim requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "claim accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local existing waiting_ancestor waiting_id
   existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  [[ -n "$existing" ]] || die_as not_found "stitch '$id' not found"
   if [[ "$(state_of_name "$(basename "$existing")")" == waiting ]]; then
-    die "'$id' is waiting. run 'loom resume $id' before claiming it."
+    die_as waiting "'$id' is waiting. run 'loom resume $id' before claiming it."
   fi
   waiting_ancestor="$(has_waiting_ancestor "$existing" || true)"
   if [[ -n "$waiting_ancestor" ]]; then
     waiting_id="$(strip_state_suffix "$(basename "$waiting_ancestor")")"
-    die "'$id' is beneath waiting stitch '$waiting_id'. run 'loom resume $waiting_id' first."
+    MUTATION_ERROR_IDS=("$waiting_id")
+    die_as waiting "'$id' is beneath waiting stitch '$waiting_id'. run 'loom resume $waiting_id' first."
   fi
   if [[ "${INDEX_DIRECT_STATE[$id]}" == plain ]] &&
      ! dependencies_ready "$id"; then
-    die "'$id' is not ready — dependency blockage, broken dependency, or dependency cycle"
+    die_as not_ready "'$id' is not ready — dependency blockage, broken dependency, or dependency cycle"
   fi
   set_stitch_state "$id" stitching loose claim "already stitching" claimed
 }
 
 cmd_tend() {
+  mutation_begin tend "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "tend requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "tend requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "tend accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
   set_stitch_state "$id" tending parent tend "already tending" "tending"
 }
 
 cmd_release() {
+  mutation_begin release "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "release requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "release requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "release accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local existing name current parent_dir dest
   existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  [[ -n "$existing" ]] || die_as not_found "stitch '$id' not found"
   ensure_under_threads "$existing" "$id" release
 
   name="$(basename "$existing")"
   current="$(state_of_name "$name")"
   if [[ "$current" == plain ]]; then
-    echo "already released: $id"
+    mutation_result "$id" false "$existing" plain "already released: $id"
     return 0
   fi
-  [[ "$current" == tending ]] || die "'$id' is not tended"
+  [[ "$current" == tending ]] || die_as not_tended "'$id' is not tended"
 
   parent_dir="$(dirname "$existing")"
   dest="$parent_dir/$id"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
   mv "$existing" "$dest"
-  echo "released $id"
+  mutation_result "$id" true "$dest" plain "released $id"
 }
 
 write_completed_at() {
@@ -942,47 +1086,55 @@ write_completed_at() {
 }
 
 cmd_tie() {
+  mutation_begin tie "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   ensure_trays
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "tie requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "tie requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "tie accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local src
   src="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$src" ]] || die "stitch '$id' not found"
+  [[ -n "$src" ]] || die_as not_found "stitch '$id' not found"
 
   case "$src" in
     "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
-      echo "already tied: $id"
+      mutation_result "$id" false "$src" tied "already tied: $id"
       return 0
       ;;
     "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
-      die "cannot tie a dropped stitch"
+      die_as terminal "cannot tie a dropped stitch"
       ;;
     "$LOOM_DIR/threads"/*|"$LOOM_DIR/threads")
       ;;
     *)
-      die "stitch '$id' is not under threads/"
+      die_as not_under_threads "stitch '$id' is not under threads/"
       ;;
   esac
 
   local direct_state
   direct_state="$(state_of_name "$(basename "$src")")"
   if [[ "$direct_state" == tied ]]; then
-    echo "already tied: $id"
+    mutation_result "$id" false "$src" tied "already tied: $id"
     return 0
   fi
-  [[ "$direct_state" != dropped ]] || die "cannot tie a dropped stitch"
-  [[ "$direct_state" != waiting ]] || die "cannot tie a waiting stitch"
+  [[ "$direct_state" != dropped ]] || die_as terminal "cannot tie a dropped stitch"
+  [[ "$direct_state" != waiting ]] || die_as waiting "cannot tie a waiting stitch"
   has_terminal_ancestor "$src" &&
-    die "cannot tie abandoned stitch '$id' beneath a terminal ancestor"
+    die_as terminal "cannot tie abandoned stitch '$id' beneath a terminal ancestor"
   local waiting_ancestor
   waiting_ancestor="$(has_waiting_ancestor "$src" || true)"
-  [[ -z "$waiting_ancestor" ]] ||
-    die "cannot tie '$id' beneath waiting stitch '$(strip_state_suffix "$(basename "$waiting_ancestor")")'"
+  if [[ -n "$waiting_ancestor" ]]; then
+    local blocking_id
+    blocking_id="$(strip_state_suffix "$(basename "$waiting_ancestor")")"
+    MUTATION_ERROR_IDS=("$blocking_id")
+    die_as waiting "cannot tie '$id' beneath waiting stitch '$blocking_id'"
+  fi
 
   local child child_state
   local unresolved=()
@@ -995,13 +1147,18 @@ cmd_tie() {
   done < <(recognized_children "$src")
 
   if (( ${#unresolved[@]} > 0 )); then
+    if [[ "$MUTATION_JSON" == true ]]; then
+      MUTATION_ERROR_CODE=unresolved_children
+      MUTATION_ERROR_IDS=("${unresolved[@]}")
+      mutation_emit_error "cannot tie '$id' — unresolved child stitches"
+    fi
     echo "error: cannot tie '$id' — unresolved child stitches:" >&2
     printf '  - %s\n' "${unresolved[@]}" >&2
     echo "tie or drop each child before tying its parent." >&2
     exit 1
   fi
   if ! dependencies_ready "$id"; then
-    die "cannot tie '$id' — dependency blockage, broken dependency, or dependency cycle"
+    die_as not_ready "cannot tie '$id' — dependency blockage, broken dependency, or dependency cycle"
   fi
 
   local canonical parent_dir
@@ -1015,11 +1172,11 @@ cmd_tie() {
   else
     dest="$parent_dir/$canonical.tied"
   fi
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
   write_completed_at "$src"
   mv "$src" "$dest"
   queue_remove_terminal_ids "${terminal_ids[@]}"
-  echo "tied $canonical"
+  mutation_result "$canonical" true "$dest" tied "tied $canonical"
 }
 
 print_stitch_tree() {
@@ -1878,7 +2035,7 @@ queue_acquire_lock() {
   until mkdir "$QUEUE_LOCK_DIR" 2>/dev/null; do
     attempt=$((attempt + 1))
     (( attempt < 200 )) ||
-      die "timed out waiting for another queue mutation"
+      die_as queue_locked "timed out waiting for another queue mutation"
     sleep 0.05
   done
   trap queue_cleanup_lock EXIT
@@ -1912,18 +2069,18 @@ queue_validate_records_for_mutation() {
   declare -A seen=()
   for line in "${QUEUE_IDS[@]}"; do
     if ! is_valid_id "$line"; then
-      die "cannot update queue: invalid entry '$line'"
+      die_as queue_records "cannot update queue: invalid entry '$line'"
     fi
     [[ -z "${seen[$line]:-}" ]] || continue
     seen["$line"]=1
     [[ "$line" != "$exempt" ]] || continue
     count="${INDEX_COUNT[$line]:-0}"
     (( count > 0 )) ||
-      die "cannot update queue: unknown entry '$line'"
+      die_as queue_records "cannot update queue: unknown entry '$line'"
     (( count == 1 )) ||
-      die "cannot update queue: ambiguous entry '$line'"
+      die_as queue_records "cannot update queue: ambiguous entry '$line'"
     queue_id_is_active "$line" ||
-      die "cannot update queue: terminal entry '$line'"
+      die_as queue_records "cannot update queue: terminal entry '$line'"
   done
 }
 
@@ -1931,15 +2088,17 @@ queue_require_active_id() {
   local id="$1"
   validate_id "$id"
   local count="${INDEX_COUNT[$id]:-0}"
-  (( count > 0 )) || die "unknown active stitch '$id'"
-  (( count == 1 )) || die "ambiguous stitch id '$id'"
+  (( count > 0 )) || die_as not_found "unknown active stitch '$id'"
+  (( count == 1 )) || die_as ambiguous "ambiguous stitch id '$id'"
   queue_id_is_active "$id" ||
-    die "stitch '$id' is terminal or archived, not active"
+    die_as terminal "stitch '$id' is terminal or archived, not active"
 }
 
 cmd_queue_mutation() {
   local action="$1"
   shift
+  mutation_begin "$action" "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
@@ -1947,12 +2106,13 @@ cmd_queue_mutation() {
   local id="${1:-}" anchor="${2:-}"
   case "$action" in
     queue|first|unqueue)
-      (( $# == 1 )) || die "$action requires <stitch-id>"
+      (( $# == 1 )) || die_as usage "$action requires <stitch-id>"
       ;;
     before|after)
-      (( $# == 2 )) || die "$action requires <stitch-id> <anchor-stitch-id>"
+      (( $# == 2 )) || die_as usage "$action requires <stitch-id> <anchor-stitch-id>"
       ;;
   esac
+  MUTATION_ID="$id"
 
   if [[ "$action" == unqueue ]]; then
     validate_id "$id"
@@ -1962,7 +2122,7 @@ cmd_queue_mutation() {
   if [[ "$action" == before || "$action" == after ]]; then
     validate_id "$anchor"
     [[ "$id" != "$anchor" ]] ||
-      die "$action requires different stitch and anchor IDs"
+      die_as usage "$action requires different stitch and anchor IDs"
   fi
 
   queue_acquire_lock
@@ -1984,7 +2144,7 @@ cmd_queue_mutation() {
       fi
     done
     [[ "$anchor_found" == true ]] ||
-      die "queue anchor '$anchor' not found"
+      die_as queue_anchor "queue anchor '$anchor' not found"
   fi
 
   local -a filtered=()
@@ -2014,14 +2174,26 @@ cmd_queue_mutation() {
     queue) filtered+=("$id") ;;
     before|after)
       [[ "$inserted" == true ]] ||
-        die "queue anchor '$anchor' could not be positioned"
+        die_as queue_anchor "queue anchor '$anchor' could not be positioned"
       ;;
   esac
 
+  local changed=false i
+  if (( ${#filtered[@]} != ${#QUEUE_LINES[@]} )); then
+    changed=true
+  else
+    for (( i=0; i<${#filtered[@]}; i++ )); do
+      [[ "${filtered[$i]}" == "${QUEUE_LINES[$i]}" ]] && continue
+      changed=true
+      break
+    done
+  fi
+
   queue_write_lines "${filtered[@]}" ||
-    die "injected queue write failure before atomic rename"
+    die_as write_failed "injected queue write failure before atomic rename"
   queue_release_lock
-  echo "$action $id"
+  mutation_result "$id" "$changed" "${INDEX_PATH[$id]:-}" \
+    "${INDEX_STATE[$id]:-}" "$action $id"
 }
 
 queue_remove_terminal_ids() {
@@ -2058,29 +2230,33 @@ subtree_stitch_ids() {
 }
 
 cmd_wait() {
+  mutation_begin wait "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "wait requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "wait requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "wait accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local existing current parent_dir dest descendant descendant_path descendant_id
-  local conflicts=()
+  local conflicts=() conflict_ids=()
   existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  [[ -n "$existing" ]] || die_as not_found "stitch '$id' not found"
   ensure_under_threads "$existing" "$id" wait
 
   current="$(state_of_name "$(basename "$existing")")"
   if [[ "$current" == waiting ]]; then
-    echo "already waiting: $id"
+    mutation_result "$id" false "$existing" waiting "already waiting: $id"
     return 0
   fi
   if [[ "$current" == tied || "$current" == dropped ]]; then
-    die "cannot wait terminal stitch '$id' ($current)"
+    die_as terminal "cannot wait terminal stitch '$id' ($current)"
   fi
   has_terminal_ancestor "$existing" &&
-    die "cannot wait abandoned stitch '$id' beneath a terminal ancestor"
+    die_as terminal "cannot wait abandoned stitch '$id' beneath a terminal ancestor"
 
   while IFS= read -r descendant; do
     [[ -n "$descendant" ]] || continue
@@ -2089,9 +2265,15 @@ cmd_wait() {
     descendant_id="$(strip_state_suffix "$(basename "$descendant")")"
     descendant_path="${descendant#$LOOM_DIR/threads/}"
     conflicts+=("$descendant_id ($descendant_path)")
+    conflict_ids+=("$descendant_id")
   done < <(walk_recognized "$existing")
 
   if (( ${#conflicts[@]} > 0 )); then
+    if [[ "$MUTATION_JSON" == true ]]; then
+      MUTATION_ERROR_CODE=claimed_descendants
+      MUTATION_ERROR_IDS=("${conflict_ids[@]}")
+      mutation_emit_error "cannot wait '$id' — claimed descendant stitches"
+    fi
     echo "error: cannot wait '$id' — claimed descendant stitches:" >&2
     printf '  - %s\n' "${conflicts[@]}" >&2
     echo "tie, drop, or otherwise relinquish each claim before waiting the subtree." >&2
@@ -2100,69 +2282,76 @@ cmd_wait() {
 
   parent_dir="$(dirname "$existing")"
   dest="$parent_dir/$id.waiting"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
   mv "$existing" "$dest"
-  echo "waiting $id"
+  mutation_result "$id" true "$dest" waiting "waiting $id"
 }
 
 cmd_resume() {
+  mutation_begin resume "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
-  [[ -n "$id" ]] || die "resume requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "resume requires <stitch-id>"
+  (( $# == 1 )) || die_as usage "resume accepts only <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local existing current parent_dir dest
   existing="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$existing" ]] || die "stitch '$id' not found"
+  [[ -n "$existing" ]] || die_as not_found "stitch '$id' not found"
   ensure_under_threads "$existing" "$id" resume
   has_terminal_ancestor "$existing" &&
-    die "cannot resume abandoned stitch '$id' beneath a terminal ancestor"
+    die_as terminal "cannot resume abandoned stitch '$id' beneath a terminal ancestor"
 
   current="$(state_of_name "$(basename "$existing")")"
   [[ "$current" == waiting ]] ||
-    die "'$id' is not directly waiting"
+    die_as not_waiting "'$id' is not directly waiting"
 
   parent_dir="$(dirname "$existing")"
   dest="$parent_dir/$id"
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
   mv "$existing" "$dest"
-  echo "resumed $id"
+  mutation_result "$id" true "$dest" plain "resumed $id"
 }
 
 cmd_drop() {
+  mutation_begin drop "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   ensure_trays
   build_index
   local id="${1:-}"
   shift || true
-  [[ -n "$id" ]] || die "drop requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "drop requires <stitch-id>"
   validate_id "$id"
+  MUTATION_ID="$id"
 
   local src
   src="$(find_unique_stitch_anywhere "$id" || true)"
-  [[ -n "$src" ]] || die "stitch '$id' not found"
+  [[ -n "$src" ]] || die_as not_found "stitch '$id' not found"
   case "$src" in
     "$LOOM_DIR/tied"/*|"$LOOM_DIR/legacy-v1/tied"/*)
-      die "cannot drop a tied stitch"
+      die_as terminal "cannot drop a tied stitch"
       ;;
     "$LOOM_DIR/dropped"/*|"$LOOM_DIR/legacy-v1/dropped"/*)
-      echo "already dropped: $id"
+      mutation_result "$id" false "$src" dropped "already dropped: $id"
       return 0
       ;;
   esac
 
   local direct_state
   direct_state="$(state_of_name "$(basename "$src")")"
-  [[ "$direct_state" != tied ]] || die "cannot drop a tied stitch"
+  [[ "$direct_state" != tied ]] || die_as terminal "cannot drop a tied stitch"
   if [[ "$direct_state" == dropped ]]; then
-    echo "already dropped: $id"
+    mutation_result "$id" false "$src" dropped "already dropped: $id"
     return 0
   fi
   has_terminal_ancestor "$src" &&
-    die "cannot drop abandoned stitch '$id' beneath a terminal ancestor"
+    die_as terminal "cannot drop abandoned stitch '$id' beneath a terminal ancestor"
 
   local canonical parent_dir
   local terminal_ids=()
@@ -2175,7 +2364,7 @@ cmd_drop() {
   else
     dest="$parent_dir/$canonical.dropped"
   fi
-  [[ ! -e "$dest" ]] || die "destination already exists: $dest"
+  [[ ! -e "$dest" ]] || die_as destination_exists "destination already exists: $dest"
 
   local reason_file="$src/reason.md"
   {
@@ -2191,8 +2380,8 @@ cmd_drop() {
   mv "$src" "$dest"
   queue_remove_terminal_ids "${terminal_ids[@]}"
 
-  echo "dropped $canonical"
-  if (( $# == 0 )); then
+  mutation_result "$canonical" true "$dest" dropped "dropped $canonical"
+  if (( $# == 0 )) && [[ "$MUTATION_JSON" != true ]]; then
     echo "next: read, then edit $dest/reason.md (agent harnesses refuse to overwrite unread files)"
   fi
 }

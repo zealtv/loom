@@ -203,6 +203,29 @@ browser, TUI, or other viewer. Viewers derive their display from that snapshot
 and perform mutations by invoking Loom commands; they never edit or maintain a
 second state model. Both map forms are strictly read-only.
 
+## Structured mutation results
+
+Every lifecycle and queue command takes `--json` before its stitch ID and then
+reports its own result as one object instead of prose:
+
+```sh
+./loom.sh tie --json http-server
+```
+
+```json
+{"schema_version":1,"format_version":2,"command":"tie","ok":true,
+ "changed":true,"id":"http-server","state":"tied","path":"tied/http-server",
+ "tray":"tied","queue_position":null,"completed_at":"2026-08-03T17:29:18+10:00"}
+```
+
+A failure emits an object with `ok:false` and a stable `error.code`, so a
+viewer can tell "not ready" from "not found" without reading prose. That is
+enough to apply the change locally instead of re-running a whole `map --json`
+for a mutation that renamed one directory. The schema is in
+[`docs/protocol-v2.md`](docs/protocol-v2.md).
+
+Human output is the default and is unchanged; `--json` is purely additive.
+
 ## Artifacts
 
 Notes, logs, decisions, intermediate files — put them inside the stitch
@@ -286,18 +309,18 @@ It can contain:
 ```text
 ./loom.sh init
 ./loom.sh new <stitch-id> [parent-stitch-id]
-./loom.sh claim <stitch-id>
-./loom.sh tend <stitch-id>
-./loom.sh release <stitch-id>
-./loom.sh wait <stitch-id>
-./loom.sh resume <stitch-id>
-./loom.sh tie <stitch-id>
-./loom.sh drop <stitch-id> [reason...]
-./loom.sh queue <stitch-id>
-./loom.sh first <stitch-id>
-./loom.sh before <stitch-id> <anchor-stitch-id>
-./loom.sh after <stitch-id> <anchor-stitch-id>
-./loom.sh unqueue <stitch-id>
+./loom.sh claim [--json] <stitch-id>
+./loom.sh tend [--json] <stitch-id>
+./loom.sh release [--json] <stitch-id>
+./loom.sh wait [--json] <stitch-id>
+./loom.sh resume [--json] <stitch-id>
+./loom.sh tie [--json] <stitch-id>
+./loom.sh drop [--json] <stitch-id> [reason...]
+./loom.sh queue [--json] <stitch-id>
+./loom.sh first [--json] <stitch-id>
+./loom.sh before [--json] <stitch-id> <anchor-stitch-id>
+./loom.sh after [--json] <stitch-id> <anchor-stitch-id>
+./loom.sh unqueue [--json] <stitch-id>
 ./loom.sh loose-ends
 ./loom.sh tending
 ./loom.sh waiting

@@ -439,3 +439,91 @@ therefore not a `schema_version` change; adding or removing a *field* is.
 The JSON snapshot is the sole supported integration boundary for future
 viewers. A viewer reads this projection and performs mutations only by
 invoking Loom commands; it owns no protocol state.
+
+## Structured mutation results
+
+Every lifecycle and queue mutation accepts `--json`: `claim`, `tend`,
+`release`, `wait`, `resume`, `tie`, `drop`, `queue`, `first`, `before`,
+`after`, and `unqueue`. The flag is recognised only before the first
+positional argument, so a `drop` reason remains literal and may itself contain
+`--json`.
+
+The flag is additive. Without it every command's output is byte-for-byte what
+it always was, which the agent loop and existing scripts depend on. With it,
+that command's stdout is exactly one JSON object and nothing else, including
+the read-before-edit hint `drop` prints when given no reason.
+
+A successful mutation emits:
+
+```text
+schema_version       integer, currently 1
+format_version       integer, currently 2
+command              the command name as invoked
+ok                   true
+changed              false when the command was an accepted no-op
+id                   the affected stitch ID
+state                its state after the mutation, or null
+path                 its path after the mutation, relative to .loom, or null
+tray                 its tray after the mutation, or null
+queue_position       its one-based queue position afterwards, or null
+completed_at         ISO-8601 string for a tie or drop, otherwise null
+```
+
+`state`, `path`, and `tray` use the same vocabulary as a `map --json` stitch
+object and are the mutation's own authoritative result, not a re-derived
+projection: a viewer applies them directly instead of re-running `map`. They
+are null only where the ID is not a stitch on disk, which just `unqueue`'s
+repair path reaches. `queue_position` is recomputed from the queue file after
+the write, so a tie or drop that evicts its ID reports null.
+
+The idempotent cases — claiming a claimed stitch, tying a tied one, unqueueing
+an absent record — are successes with `changed: false`. A queue mutation that
+leaves the file byte-identical is likewise unchanged.
+
+A failed mutation emits, on stdout, exit status non-zero:
+
+```text
+schema_version       integer, currently 1
+format_version       integer, currently 2
+command              the command name as invoked
+ok                   false
+id                   the target stitch ID, or null if none was parsed
+error                {code, message, stitch_ids}
+```
+
+`message` is the same text the command writes to stderr, which it still writes
+unchanged. `stitch_ids` names the other stitches implicated in the failure —
+the unresolved children, the claimed descendants, the blocking waiting
+ancestor — and is otherwise empty.
+
+The codes in use are:
+
+| Code | Meaning |
+| --- | --- |
+| `usage` | wrong argument count, or an unknown option |
+| `format` | the loom is not v2, or a migration is unfinished |
+| `invalid_id` | the ID is syntactically invalid |
+| `not_found` | no stitch with that ID |
+| `ambiguous` | more than one stitch with that ID |
+| `not_under_threads` | the target is archived, not active |
+| `terminal` | the target or an ancestor is tied or dropped |
+| `waiting` | the target or an ancestor is parked |
+| `tended` | the target has a steward; release it first |
+| `not_tended` | the target is not tended |
+| `not_waiting` | the target is not directly waiting |
+| `not_ready` | dependency blockage, broken dependency, or cycle |
+| `not_loose_end` | the target has unresolved children |
+| `not_child_bearing` | the target has no children requiring work |
+| `unresolved_children` | a tie whose children are not all terminal |
+| `claimed_descendants` | a wait over a claimed descendant |
+| `destination_exists` | the rename target already exists |
+| `queue_anchor` | the `before`/`after` anchor is not in the queue |
+| `queue_locked` | another queue mutation held the lock too long |
+| `queue_records` | an unrelated queue record is invalid or stale |
+| `write_failed` | the queue write failed before its atomic rename |
+| `failed` | the fallback for a failure with no more specific code |
+
+Like diagnostic codes, this set is open: a consumer must tolerate an
+unrecognised `code` rather than treat it as a parse failure. Adding a code is
+not a `schema_version` change; adding or removing a *field* is. The mutation
+result carries its own `schema_version`, independent of the map projection's.
