@@ -20,7 +20,7 @@ Install the released v2 files into the current repository:
 
 ```sh
 loom_source="$(mktemp -d)"
-git clone --depth 1 --branch v2.0.0 https://github.com/zealtv/loom.git "$loom_source"
+git clone --depth 1 --branch v2.0.1 https://github.com/zealtv/loom.git "$loom_source"
 "$loom_source/install.sh" "$PWD"
 ```
 
@@ -28,8 +28,9 @@ This copies `loom.sh`, `README.md`, and the v2 protocol document into the
 project's `.loom/` directory, then runs `.loom/loom.sh init`.
 
 For a fresh loom, `init` creates `threads/`, `tied/`, and `dropped/` next to
-itself and writes `format-version` with value `2`. It does not mark a
-markerless loom containing existing history as v2.
+itself, seeds the two archive trays so they survive a commit and clone, and
+writes `format-version` with value `2`. It does not mark a markerless loom
+containing existing history as v2.
 `loom.sh` operates on the `.loom/` directory it lives in, so each copy is
 self-contained.
 
