@@ -1,6 +1,6 @@
 # Loom filesystem protocol v2
 
-Status: released as Loom v2.0.1.
+Status: released as Loom v2.1.0.
 
 This document defines the authoritative on-disk protocol and observable CLI
 behaviour for Loom format version 2. The filesystem is authoritative. Command

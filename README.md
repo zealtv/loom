@@ -20,7 +20,7 @@ Install the released v2 files into the current repository:
 
 ```sh
 loom_source="$(mktemp -d)"
-git clone --depth 1 --branch v2.0.1 https://github.com/zealtv/loom.git "$loom_source"
+git clone --depth 1 --branch v2.1.0 https://github.com/zealtv/loom.git "$loom_source"
 "$loom_source/install.sh" "$PWD"
 ```
 
