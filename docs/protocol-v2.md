@@ -295,6 +295,7 @@ Queue order is a soft preference, never a dependency. Commands are:
 
 ```text
 loom queue <id>
+loom queue --set <id>...
 loom first <id>
 loom before <id> <anchor-id>
 loom after <id> <anchor-id>
@@ -309,6 +310,16 @@ result as running it once.
 
 `unqueue` accepts any syntactically valid ID so it can repair a manually stale
 queue. It removes every occurrence and is successful when none exists.
+
+`queue --set` validates the entire existing queue and every requested ID, then
+replaces the effective ID order in one atomic rename. Duplicate requested IDs
+are removed, retaining their first occurrence. Existing blank and comment
+records are preserved byte-for-byte in relative order: requested IDs fill the
+existing ID slots from top to bottom, surplus slots disappear, and surplus IDs
+are appended. An empty set clears every ID while retaining comments and blanks.
+Repeating the same set is a filesystem no-op. Batch replacement is
+human-output-only; the single-ID queue verbs retain the versioned mutation
+result shape.
 
 A mutation validates all records other than duplicate occurrences, removes
 duplicates while retaining their first occurrence, performs the requested

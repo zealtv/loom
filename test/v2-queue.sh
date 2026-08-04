@@ -138,4 +138,45 @@ done
 assert_eq $'alpha\nbeta\ndelta\ngamma' "$(queue_ids | sort)" \
   "concurrent queue mutations retain every update exactly once"
 
+new_test_loom
+for id in alpha beta gamma delta; do
+  "$LOOM" new "$id" >/dev/null
+done
+printf '# first\nalpha\n\n# second\nbeta\n' > "$TEST_REPO/.loom/queue"
+"$LOOM" queue --set gamma gamma alpha delta >/dev/null
+assert_eq $'gamma\nalpha\ndelta' "$(queue_ids)" \
+  "queue --set replaces the effective order and retains first duplicates"
+assert_eq $'# first\n\n# second' \
+  "$(grep -e '^$' -e '^#' "$TEST_REPO/.loom/queue")" \
+  "queue --set preserves comments and blanks in relative order"
+
+queue_before="$(cksum < "$TEST_REPO/.loom/queue")"
+queue_mtime_before="$(stat -c %Y "$TEST_REPO/.loom/queue")"
+"$LOOM" queue --set gamma alpha delta >/dev/null
+assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
+  "repeating queue --set preserves bytes"
+assert_eq "$queue_mtime_before" "$(stat -c %Y "$TEST_REPO/.loom/queue")" \
+  "repeating queue --set is a filesystem no-op"
+"$LOOM" queue --set >/dev/null
+assert_eq "" "$(queue_ids)" "queue --set with no IDs clears the queue"
+
+printf 'gamma\nghost\n' > "$TEST_REPO/.loom/queue"
+queue_before="$(cksum < "$TEST_REPO/.loom/queue")"
+assert_fails_with "unknown entry" "$LOOM" queue --set alpha beta
+assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
+  "invalid existing records fail queue --set without changing bytes"
+
+printf 'gamma\n' > "$TEST_REPO/.loom/queue"
+queue_before="$(cksum < "$TEST_REPO/.loom/queue")"
+assert_fails_with "unknown active stitch" "$LOOM" queue --set alpha ghost
+assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
+  "invalid requested records fail queue --set without changing bytes"
+
+if LOOM_TEST_FAIL_QUEUE_WRITE=before-rename \
+  "$LOOM" queue --set beta alpha >/dev/null 2>&1; then
+  fail "injected queue --set write failure must fail"
+fi
+assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
+  "failed queue --set atomic write changed queue bytes"
+
 echo "v2 queue: ok"

@@ -15,6 +15,7 @@ usage:
   loom.sh tie [--json] <stitch-id>
   loom.sh drop [--json] <stitch-id> [reason...]
   loom.sh queue [--json] <stitch-id>
+  loom.sh queue --set <stitch-id>...
   loom.sh first [--json] <stitch-id>
   loom.sh before [--json] <stitch-id> <anchor-stitch-id>
   loom.sh after [--json] <stitch-id> <anchor-stitch-id>
@@ -2248,6 +2249,65 @@ cmd_queue_mutation() {
     "${INDEX_STATE[$id]:-}" "$action $id"
 }
 
+cmd_queue_set() {
+  require_loom
+  require_v2_mutation
+
+  local requested id line i changed=false noun=stitches
+  local -a requested_ids=() rewritten=()
+  declare -A requested_seen=()
+  for requested in "$@"; do
+    validate_id "$requested"
+    [[ -z "${requested_seen[$requested]:-}" ]] || continue
+    requested_seen["$requested"]=1
+    requested_ids+=("$requested")
+  done
+
+  build_index
+  for id in "${requested_ids[@]}"; do
+    queue_require_active_id "$id"
+  done
+
+  queue_acquire_lock
+  build_index
+  queue_validate_records_for_mutation
+  for id in "${requested_ids[@]}"; do
+    queue_require_active_id "$id"
+  done
+
+  i=0
+  for line in "${QUEUE_LINES[@]}"; do
+    if [[ -z "$line" || "$line" == \#* ]]; then
+      rewritten+=("$line")
+    elif (( i < ${#requested_ids[@]} )); then
+      rewritten+=("${requested_ids[$i]}")
+      i=$((i + 1))
+    fi
+  done
+  while (( i < ${#requested_ids[@]} )); do
+    rewritten+=("${requested_ids[$i]}")
+    i=$((i + 1))
+  done
+
+  if (( ${#rewritten[@]} != ${#QUEUE_LINES[@]} )); then
+    changed=true
+  else
+    for (( i=0; i<${#rewritten[@]}; i++ )); do
+      [[ "${rewritten[$i]}" == "${QUEUE_LINES[$i]}" ]] && continue
+      changed=true
+      break
+    done
+  fi
+
+  if [[ "$changed" == true ]]; then
+    queue_write_lines "${rewritten[@]}" ||
+      die_as write_failed "injected queue write failure before atomic rename"
+  fi
+  queue_release_lock
+  (( ${#requested_ids[@]} != 1 )) || noun=stitch
+  printf 'set queue (%s %s)\n' "${#requested_ids[@]}" "$noun"
+}
+
 queue_remove_terminal_ids() {
   (( $# > 0 )) || return 0
   [[ -f "$LOOM_DIR/queue" ]] || return 0
@@ -3008,7 +3068,12 @@ main() {
       ;;
     queue|first|before|after|unqueue)
       shift
-      cmd_queue_mutation "$cmd" "$@"
+      if [[ "$cmd" == queue && "${1:-}" == --set ]]; then
+        shift
+        cmd_queue_set "$@"
+      else
+        cmd_queue_mutation "$cmd" "$@"
+      fi
       ;;
     loose-ends)
       shift
