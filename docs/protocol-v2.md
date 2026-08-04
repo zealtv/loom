@@ -278,6 +278,19 @@ deterministically. Each strongly connected cyclic component appears once,
 with member IDs in bytewise order; a self-edge is both an invalid self-edge
 and a one-member cycle. Cycle members are not ready.
 
+`anchor [--json] <stitch-id> <target-id>` creates an edge through the canonical
+boundary. The dependent must be active and the target must resolve uniquely;
+a tied target is allowed because the edge is immediately satisfied, while a
+dropped or abandoned target is rejected. The command validates before writing
+and refuses a self-edge or any edge that would close a dependency cycle. Edge
+creation uses an atomic rename and anchoring an existing edge is a no-op.
+
+`unanchor [--json] <stitch-id> <target-id>` removes that one edge without
+touching the target stitch. It also removes an empty `needs/` directory so the
+result is indistinguishable from a stitch that never had dependencies.
+Unanchoring an absent edge is a no-op, and a missing target may be named so a
+broken edge can be repaired.
+
 `status` separates ordinary blocked edges from broken edges. It names the
 dependent, target, and `missing`, `dropped`, or `ambiguous` cause. It exits
 non-zero for malformed records, duplicate IDs, broken dependencies, or
@@ -482,7 +495,8 @@ and may also be used with the plain map.
 
 ## Structured mutation results
 
-Every lifecycle and queue mutation accepts `--json`: `new`, `claim`, `tend`,
+Every lifecycle, dependency, and queue mutation accepts `--json`: `new`,
+`claim`, `tend`, `anchor`, `unanchor`,
 `release`, `wait`, `resume`, `tie`, `drop`, `queue`, `first`, `before`,
 `after`, and `unqueue`. The flag is recognised only before the first
 positional argument, so a `drop` reason remains literal and may itself contain
@@ -560,7 +574,9 @@ The codes in use are:
 | `queue_anchor` | the `before`/`after` anchor is not in the queue |
 | `queue_locked` | another queue mutation held the lock too long |
 | `queue_records` | an unrelated queue record is invalid or stale |
-| `write_failed` | the queue write failed before its atomic rename |
+| `write_failed` | an atomic queue or dependency write failed before rename |
+| `dependency_cycle` | an anchor would create a dependency cycle |
+| `structural` | dependency storage is not canonical |
 | `failed` | the fallback for a failure with no more specific code |
 
 Like diagnostic codes, this set is open: a consumer must tolerate an

@@ -158,4 +158,47 @@ write_instructions \
   "$TEST_REPO/.loom/threads/dependent/duplicate-target" duplicate-target
 assert_fails_with "ambiguous" "$LOOM" status
 
+# Dependency mutations own needs/ writes, are idempotent, and refuse cycles.
+new_test_loom
+for id in a b c completed discarded; do
+  "$LOOM" new "$id" >/dev/null
+done
+"$LOOM" tie completed >/dev/null
+"$LOOM" drop discarded unused >/dev/null
+
+assert_eq "anchored a -> b" "$("$LOOM" anchor a b)" "anchor prose"
+assert_file "$TEST_REPO/.loom/threads/a/needs/b"
+edge_before="$(cksum < "$TEST_REPO/.loom/threads/a/needs/b")"
+assert_eq "already anchored a -> b" "$("$LOOM" anchor a b)" \
+  "repeated anchor is a no-op"
+assert_eq "$edge_before" "$(cksum < "$TEST_REPO/.loom/threads/a/needs/b")" \
+  "repeated anchor preserves the edge"
+
+"$LOOM" anchor b c >/dev/null
+assert_fails_with "dependency cycle" "$LOOM" anchor c a
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+assert_fails_with "itself" "$LOOM" anchor c c
+assert_fails_with "not found" "$LOOM" anchor c missing
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+assert_fails_with "dropped" "$LOOM" anchor c discarded
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+
+"$LOOM" anchor c completed >/dev/null
+assert_file "$TEST_REPO/.loom/threads/c/needs/completed"
+"$LOOM" unanchor c completed >/dev/null
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+assert_eq "already unanchored c -> completed" \
+  "$("$LOOM" unanchor c completed)" "repeated unanchor is a no-op"
+
+mkdir -p "$TEST_REPO/.loom/threads/c/needs"
+: > "$TEST_REPO/.loom/threads/c/needs/vanished"
+"$LOOM" unanchor c vanished >/dev/null
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+
+if LOOM_TEST_FAIL_ANCHOR_WRITE=before-rename \
+  "$LOOM" anchor c completed >/dev/null 2>&1; then
+  fail "injected anchor write failure must fail"
+fi
+assert_no_path "$TEST_REPO/.loom/threads/c/needs"
+
 echo "v2 dependencies: ok"

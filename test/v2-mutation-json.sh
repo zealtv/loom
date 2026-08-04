@@ -36,6 +36,21 @@ assert_json_field "$created" "doc['changed']" "true" "new result changed"
 child_created="$($LOOM new --json child alpha)"
 assert_json_field "$child_created" "doc['path']" "threads/alpha/child" \
   "new child result path"
+anchored="$($LOOM anchor --json beta alpha)"
+assert_json_field "$anchored" "doc['command']" "anchor" \
+  "anchor result command"
+assert_json_field "$anchored" "doc['id']" "beta" "anchor result id"
+assert_json_field "$anchored" "doc['state']" "plain" "anchor result state"
+assert_json_field "$anchored" "doc['changed']" "true" \
+  "anchor result changed"
+anchor_again="$($LOOM anchor --json beta alpha)"
+assert_json_field "$anchor_again" "doc['changed']" "false" \
+  "repeat anchor result changed"
+unanchored="$($LOOM unanchor --json beta alpha)"
+assert_json_field "$unanchored" "doc['command']" "unanchor" \
+  "unanchor result command"
+assert_json_field "$unanchored" "doc['changed']" "true" \
+  "unanchor result changed"
 
 # --- shape ------------------------------------------------------------------
 
@@ -163,6 +178,7 @@ assert_error_code not_found "$LOOM" claim --json missing >/dev/null
 assert_error_code usage "$LOOM" new --json >/dev/null
 assert_error_code usage "$LOOM" new --json extra one two >/dev/null
 assert_error_code failed "$LOOM" new --json parent >/dev/null
+assert_error_code dependency_cycle "$LOOM" anchor --json one one >/dev/null
 assert_error_code invalid_id "$LOOM" claim --json 'bad id' >/dev/null
 assert_error_code usage "$LOOM" claim --json >/dev/null
 assert_error_code usage "$LOOM" claim --json one two >/dev/null

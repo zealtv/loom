@@ -20,6 +20,8 @@ usage:
   loom.sh before [--json] <stitch-id> <anchor-stitch-id>
   loom.sh after [--json] <stitch-id> <anchor-stitch-id>
   loom.sh unqueue [--json] <stitch-id>
+  loom.sh anchor [--json] <stitch-id> <target-stitch-id>
+  loom.sh unanchor [--json] <stitch-id> <target-stitch-id>
   loom.sh loose-ends
   loom.sh tending
   loom.sh waiting
@@ -773,6 +775,25 @@ dependencies_ready() {
     [[ "${EDGE_STATES[$i]}" == satisfied ]] || return 1
   done
   return 0
+}
+
+dependency_path_exists() {
+  local start="$1" sought="$2" current i
+  local -a frontier=("$start")
+  declare -A seen=()
+  while (( ${#frontier[@]} > 0 )); do
+    current="${frontier[${#frontier[@]}-1]}"
+    unset 'frontier[${#frontier[@]}-1]'
+    [[ "$current" != "$sought" ]] || return 0
+    [[ -z "${seen[$current]:-}" ]] || continue
+    seen["$current"]=1
+    for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+      [[ "${EDGE_DEPENDENTS[$i]}" == "$current" ]] || continue
+      [[ "${INDEX_COUNT[${EDGE_TARGETS[$i]}]:-0}" == 1 ]] || continue
+      frontier+=("${EDGE_TARGETS[$i]}")
+    done
+  done
+  return 1
 }
 
 is_effectively_ready() {
@@ -2338,6 +2359,106 @@ cmd_queue_set() {
   printf 'set queue (%s %s)\n' "${#requested_ids[@]}" "$noun"
 }
 
+dependency_create_edge() {
+  local stitch_dir="$1" target="$2" needs="$1/needs" temp
+  if [[ -d "$needs" ]]; then
+    temp="$(mktemp "$needs/.anchor.tmp.XXXXXX")"
+    if [[ "${LOOM_TEST_FAIL_ANCHOR_WRITE:-}" == before-rename ]]; then
+      rm -f -- "$temp"
+      return 1
+    fi
+    mv "$temp" "$needs/$target"
+    return
+  fi
+
+  temp="$(mktemp -d "$stitch_dir/.needs.tmp.XXXXXX")"
+  : > "$temp/$target"
+  if [[ "${LOOM_TEST_FAIL_ANCHOR_WRITE:-}" == before-rename ]]; then
+    rm -rf -- "$temp"
+    return 1
+  fi
+  mv "$temp" "$needs"
+}
+
+cmd_dependency_mutation() {
+  local action="$1"
+  shift
+  mutation_begin "$action" "$@"
+  set -- "${MUTATION_ARGS[@]}"
+  require_loom
+  require_v2_mutation
+  (( $# == 2 )) || die_as usage "$action requires <stitch-id> <target-stitch-id>"
+
+  local id="$1" target="$2" stitch_dir target_count target_state
+  local needs entry changed=false
+  validate_id "$id"
+  MUTATION_ID="$id"
+  validate_id "$target"
+  [[ "$id" != "$target" ]] || {
+    MUTATION_ERROR_IDS=("$target")
+    die_as dependency_cycle "anchoring '$id' to itself would create a dependency cycle"
+  }
+
+  build_index
+  queue_require_active_id "$id"
+  stitch_dir="${INDEX_PATH[$id]}"
+  needs="$stitch_dir/needs"
+  [[ -z "${INDEX_INVALID[$id]:-}" ]] ||
+    die_as structural "stitch '$id' has invalid dependency storage"
+
+  if [[ -e "$needs" || -L "$needs" ]]; then
+    [[ -d "$needs" && ! -L "$needs" ]] ||
+      die_as structural "dependency storage for '$id' is not a directory"
+  fi
+  entry="$needs/$target"
+  if [[ -e "$entry" || -L "$entry" ]]; then
+    [[ -f "$entry" && ! -L "$entry" ]] ||
+      die_as structural "dependency '$id -> $target' is not a regular file"
+    if [[ "$action" == anchor ]]; then
+      mutation_result "$id" false "$stitch_dir" "${INDEX_STATE[$id]}" \
+        "already anchored $id -> $target"
+      return
+    fi
+  elif [[ "$action" == unanchor ]]; then
+    mutation_result "$id" false "$stitch_dir" "${INDEX_STATE[$id]}" \
+      "already unanchored $id -> $target"
+    return
+  fi
+
+  if [[ "$action" == anchor ]]; then
+    target_count="${INDEX_COUNT[$target]:-0}"
+    (( target_count > 0 )) || {
+      MUTATION_ERROR_IDS=("$target")
+      die_as not_found "dependency target '$target' not found"
+    }
+    (( target_count == 1 )) || {
+      MUTATION_ERROR_IDS=("$target")
+      die_as ambiguous "dependency target '$target' is ambiguous"
+    }
+    target_state="${INDEX_STATE[$target]}"
+    [[ "$target_state" != dropped && "$target_state" != abandoned ]] || {
+      MUTATION_ERROR_IDS=("$target")
+      die_as terminal "dependency target '$target' is dropped"
+    }
+    if dependency_path_exists "$target" "$id"; then
+      MUTATION_ERROR_IDS=("$target")
+      die_as dependency_cycle "anchoring '$id -> $target' would create a dependency cycle"
+    fi
+    dependency_create_edge "$stitch_dir" "$target" ||
+      die_as write_failed "injected dependency write failure before atomic rename"
+    changed=true
+    mutation_result "$id" "$changed" "$stitch_dir" "${INDEX_STATE[$id]}" \
+      "anchored $id -> $target"
+    return
+  fi
+
+  rm -f -- "$entry"
+  rmdir -- "$needs" 2>/dev/null || true
+  changed=true
+  mutation_result "$id" "$changed" "$stitch_dir" "${INDEX_STATE[$id]}" \
+    "unanchored $id -> $target"
+}
+
 queue_remove_terminal_ids() {
   (( $# > 0 )) || return 0
   [[ -f "$LOOM_DIR/queue" ]] || return 0
@@ -3104,6 +3225,10 @@ main() {
       else
         cmd_queue_mutation "$cmd" "$@"
       fi
+      ;;
+    anchor|unanchor)
+      shift
+      cmd_dependency_mutation "$cmd" "$@"
       ;;
     loose-ends)
       shift
