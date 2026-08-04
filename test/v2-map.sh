@@ -134,6 +134,27 @@ else
   echo "NOTE: python3 unavailable; detailed map schema assertions skipped"
 fi
 
+# Active scope retains the live tree and retained terminal children while
+# omitting goal archives and migrated legacy records.
+active_json="$($LOOM map --json --active 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$active_json" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+by_id = {stitch["id"]: stitch for stitch in doc["stitches"]}
+assert "release" in by_id
+assert "design" in by_id
+assert "completed" not in by_id
+assert "abandoned" not in by_id
+assert "old" not in by_id
+assert all(not stitch["archived"] for stitch in doc["stitches"])
+assert all(not stitch["legacy"] for stitch in doc["stitches"])
+assert "old" not in doc["recently_completed"]
+PY
+fi
+
 # Loom roots are user paths, unlike constrained stitch IDs. Exercise JSON
 # escaping for the path characters most likely to break a hand serializer.
 special_repo="$TEST_TMP/map \"quoted\" \\ root"

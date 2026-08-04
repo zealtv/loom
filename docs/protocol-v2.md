@@ -472,6 +472,14 @@ The JSON snapshot is the sole supported integration boundary for future
 viewers. A viewer reads this projection and performs mutations only by
 invoking Loom commands; it owns no protocol state.
 
+`map --json --active` emits the same schema restricted to records in the
+active `threads/` tray, including terminal children retained beneath an active
+goal. Goal archives and migrated legacy records are omitted from `stitches`,
+`decomposition_edges`, `dependency_edges`, and `recently_completed`; an edge
+to an omitted terminal target remains visible in its active stitch's nested
+`dependencies` array. `--active` is a projection option, not a schema change,
+and may also be used with the plain map.
+
 ## Structured mutation results
 
 Every lifecycle and queue mutation accepts `--json`: `claim`, `tend`,

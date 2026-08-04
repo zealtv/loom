@@ -26,7 +26,7 @@ usage:
   loom.sh next
   loom.sh status
   loom.sh revision
-  loom.sh map [--json]
+  loom.sh map [--json] [--active]
   loom.sh migrate-v2 [--dry-run|--rollback]
   loom.sh sweep [days]
 
@@ -329,6 +329,7 @@ walk_all_stitches() {
 }
 
 INDEX_BUILT=false
+MAP_ACTIVE_ONLY=false
 INDEX_ERRORS=()
 INDEX_CYCLES=()
 QUEUE_LINES=()
@@ -1404,6 +1405,7 @@ map_ids_by_path() {
   local id
   for id in "${!INDEX_PATH[@]}"; do
     [[ "${INDEX_COUNT[$id]:-0}" == 1 ]] || continue
+    [[ "$MAP_ACTIVE_ONLY" != true || "${INDEX_TRAY[$id]}" == threads ]] || continue
     printf '%s\t%s\n' "${INDEX_RELATIVE[$id]}" "$id"
   done | sort -t $'\t' -k1,1 | cut -f2
 }
@@ -1413,6 +1415,7 @@ map_recent_ids() {
   {
     for id in "${!INDEX_PATH[@]}"; do
       [[ "${INDEX_COUNT[$id]:-0}" == 1 ]] || continue
+      [[ "$MAP_ACTIVE_ONLY" != true || "${INDEX_TRAY[$id]}" == threads ]] || continue
       state="${INDEX_STATE[$id]}"
       [[ "$state" == tied || "$state" == dropped ]] || continue
       timestamp="${INDEX_COMPLETED_AT[$id]:-}"
@@ -1709,6 +1712,10 @@ map_emit_json() {
     first=false
   done < <(
     for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+      if [[ "$MAP_ACTIVE_ONLY" == true ]]; then
+        [[ "${INDEX_TRAY[${EDGE_DEPENDENTS[$i]}]:-}" == threads &&
+           "${INDEX_TRAY[${EDGE_TARGETS[$i]}]:-}" == threads ]] || continue
+      fi
       printf '%s/%s\t%s\n' "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}" "$i"
     done | sort
   )
@@ -1717,6 +1724,14 @@ map_emit_json() {
   printf ',"cycles":['
   first=true
   for cycle in "${INDEX_CYCLES[@]}"; do
+    if [[ "$MAP_ACTIVE_ONLY" == true ]]; then
+      local cycle_active=true member cycle_members=()
+      IFS=',' read -ra cycle_members <<< "$cycle"
+      for member in "${cycle_members[@]}"; do
+        [[ "${INDEX_TRAY[$member]:-}" == threads ]] || cycle_active=false
+      done
+      [[ "$cycle_active" == true ]] || continue
+    fi
     [[ "$first" == true ]] || printf ','
     map_emit_csv_id_array "$cycle"
     first=false
@@ -1871,12 +1886,23 @@ cmd_map() {
   require_loom
   [[ "$(format_version_state)" == v2 ]] ||
     die "map requires a format v2 loom (run migrate-v2 first)"
-  local mode="${1:-}"
-  [[ -z "$mode" || "$mode" == --json ]] ||
-    die "map accepts only --json"
-  [[ $# -le 1 ]] || die "map accepts only --json"
+  local mode=plain arg
+  MAP_ACTIVE_ONLY=false
+  for arg in "$@"; do
+    case "$arg" in
+      --json)
+        [[ "$mode" == plain ]] || die "map accepts --json only once"
+        mode=json
+        ;;
+      --active)
+        [[ "$MAP_ACTIVE_ONLY" == false ]] || die "map accepts --active only once"
+        MAP_ACTIVE_ONLY=true
+        ;;
+      *) die "map accepts only --json and --active" ;;
+    esac
+  done
   build_index
-  if [[ "$mode" == --json ]]; then
+  if [[ "$mode" == json ]]; then
     map_emit_json
   else
     map_emit_plain
