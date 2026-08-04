@@ -166,6 +166,34 @@ assert doc["diagnostics"] == []
 PY
 fi
 
+# Queue dependency diagnostics are warnings and do not affect map health.
+new_test_loom
+"$LOOM" new prerequisite >/dev/null
+"$LOOM" new dependent >/dev/null
+mkdir -p "$TEST_REPO/.loom/threads/dependent/needs"
+: > "$TEST_REPO/.loom/threads/dependent/needs/prerequisite"
+"$LOOM" queue dependent >/dev/null
+queue_warning_json="$("$LOOM" map --json)"
+assert_contains "$queue_warning_json" '"code":"queue_dependency_unqueued"' \
+  "map warns about an unqueued dependency"
+"$LOOM" queue prerequisite >/dev/null
+queue_warning_json="$("$LOOM" map --json)"
+assert_contains "$queue_warning_json" '"code":"queue_dependency_inversion"' \
+  "map warns about an inverted queued dependency"
+if command -v python3 >/dev/null 2>&1; then
+  MAP_JSON="$queue_warning_json" python3 - <<'PY'
+import json
+import os
+
+doc = json.loads(os.environ["MAP_JSON"])
+warning = next(d for d in doc["diagnostics"]
+               if d["code"] == "queue_dependency_inversion")
+assert warning["severity"] == "warning"
+assert warning["stitch_id"] == "dependent"
+assert warning["target_id"] == "prerequisite"
+PY
+fi
+
 # A missing archive tray is a warning diagnostic, not an error: the loom is
 # usable, the map stays read-only, and the exit code stays zero.
 new_test_loom

@@ -1461,6 +1461,26 @@ map_health() {
   return 0
 }
 
+queue_dependency_warnings() {
+  local i dependent target dependent_position target_position code
+  for (( i=0; i<${#EDGE_DEPENDENTS[@]}; i++ )); do
+    [[ "${EDGE_STATES[$i]}" == blocked ]] || continue
+    dependent="${EDGE_DEPENDENTS[$i]}"
+    target="${EDGE_TARGETS[$i]}"
+    dependent_position="${QUEUE_POSITION[$dependent]:-}"
+    [[ -n "$dependent_position" ]] || continue
+    target_position="${QUEUE_POSITION[$target]:-}"
+    if [[ -z "$target_position" ]]; then
+      code=queue_dependency_unqueued
+    elif (( target_position > dependent_position )); then
+      code=queue_dependency_inversion
+    else
+      continue
+    fi
+    printf '%s\t%s\t%s\n' "$dependent" "$target" "$code"
+  done | sort -t $'\t' -k1,1 -k2,2 -k3,3
+}
+
 map_stitch_cycle() {
   local id="$1" cycle member
   local members=()
@@ -1580,7 +1600,7 @@ map_emit_diagnostic() {
 }
 
 map_emit_diagnostics() {
-  local first=true i message cycle
+  local first=true i message cycle dependent target code
   printf '['
 
   while IFS=$'\t' read -r _ i; do
@@ -1612,6 +1632,18 @@ map_emit_diagnostics() {
       "archive tray '$tray' is missing; a tie or drop of a goal stitch will recreate it"
     first=false
   done < <(missing_trays)
+
+  while IFS=$'\t' read -r dependent target code; do
+    [[ -n "$dependent" ]] || continue
+    [[ "$first" == true ]] || printf ','
+    if [[ "$code" == queue_dependency_inversion ]]; then
+      message="queued stitch '$dependent' appears before its unsatisfied dependency '$target'"
+    else
+      message="queued stitch '$dependent' has unqueued unsatisfied dependency '$target'"
+    fi
+    map_emit_diagnostic warning "$code" "$message" "$dependent" "$target"
+    first=false
+  done < <(queue_dependency_warnings)
 
   while IFS= read -r message; do
     [[ -n "$message" ]] || continue
@@ -1909,6 +1941,24 @@ cmd_status() {
       "${EDGE_DEPENDENTS[$i]}" "${EDGE_TARGETS[$i]}"
   done
   [[ "$has_blocked" == false ]] || echo
+
+  local queue_warning_dependent queue_warning_target queue_warning_code
+  local has_queue_warning=false
+  while IFS=$'\t' read -r queue_warning_dependent queue_warning_target queue_warning_code; do
+    [[ -n "$queue_warning_dependent" ]] || continue
+    if [[ "$has_queue_warning" == false ]]; then
+      echo "⚠️  queue dependency warnings"
+      has_queue_warning=true
+    fi
+    if [[ "$queue_warning_code" == queue_dependency_inversion ]]; then
+      printf -- "- %s is queued before its unsatisfied dependency %s\n" \
+        "$queue_warning_dependent" "$queue_warning_target"
+    else
+      printf -- "- %s is queued but its unsatisfied dependency %s is not queued\n" \
+        "$queue_warning_dependent" "$queue_warning_target"
+    fi
+  done < <(queue_dependency_warnings)
+  [[ "$has_queue_warning" == false ]] || echo
 
   echo "📋 sparse queue"
   if (( ${#QUEUE_IDS[@]} == 0 )); then

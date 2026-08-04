@@ -52,6 +52,17 @@ mkdir -p "$TEST_REPO/.loom/threads/alpha/needs"
 "$LOOM" claim beta >/dev/null
 assert_eq "prerequisite" "$("$LOOM" next)" \
   "dependencies override queue and fallback is deterministic"
+warning_status="$("$LOOM" status)"
+assert_contains "$warning_status" "alpha is queued but its unsatisfied dependency prerequisite is not queued" \
+  "status warns when a queued stitch depends on unqueued work"
+"$LOOM" queue prerequisite >/dev/null
+"$LOOM" after prerequisite alpha >/dev/null
+warning_status="$("$LOOM" status)"
+assert_contains "$warning_status" "alpha is queued before its unsatisfied dependency prerequisite" \
+  "status warns when queue order contradicts a dependency"
+"$LOOM" first prerequisite >/dev/null
+assert_not_contains "$("$LOOM" status)" "queue dependency warnings" \
+  "a dependency queued first does not warn"
 
 printf '# keep this comment\nalpha\nalpha\nunknown\n' > \
   "$TEST_REPO/.loom/queue"

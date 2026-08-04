@@ -317,6 +317,12 @@ stitches in that same effective preference order. Queue position is
 one-based among ID records and is shown even when the item is currently
 blocked.
 
+`status` and `map --json` warn when a queued stitch has an unsatisfied direct
+dependency that is either queued below it (`queue_dependency_inversion`) or
+not queued (`queue_dependency_unqueued`). These are preference diagnostics:
+they never change command health or prevent a deliberately unusual order.
+Satisfied and transitive dependencies do not produce these warnings.
+
 ## Explicit v1 migration
 
 `migrate-v2 --dry-run` validates and prints every planned move/write without
@@ -428,6 +434,8 @@ The codes in use are:
 | `broken_dependency` | error | a `needs/` target is missing, dropped, ambiguous, or invalid |
 | `dependency_cycle` | error | a dependency cycle, reported once per cycle |
 | `missing_tray` | warning | `tied/` or `dropped/` is absent; the next tie or drop recreates it |
+| `queue_dependency_inversion` | warning | a queued stitch precedes its unsatisfied direct dependency |
+| `queue_dependency_unqueued` | warning | a queued stitch has an unqueued unsatisfied direct dependency |
 | `queue_error` | error | a malformed or unresolvable `queue` entry |
 | `structural_error` | error | a malformed stitch, duplicate ID, or invalid `completed-at` |
 
