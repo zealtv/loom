@@ -12,6 +12,7 @@ tests=(
   v2-queue.sh
   v2-mutation-json.sh
   v2-migration.sh
+  v2-revision.sh
   v2-map.sh
   v2-release-acceptance.sh
 )

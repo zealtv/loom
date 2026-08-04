@@ -67,6 +67,19 @@ a tray entry, and is never swept.
 Read-only commands never repair a missing tray. They report it: see the
 `missing_tray` diagnostic.
 
+### Cheap change detection
+
+`revision` prints one deterministic checksum token derived from the recognised
+stitch paths and protocol files, including instruction text, completion and
+drop metadata, dependency entries, the format marker, and exact queue bytes.
+The token changes whenever the state exposed to a viewer changes. It may be
+polled to decide whether a full `map --json` projection is necessary.
+
+`revision` is strictly read-only: it never repairs trays or changes bytes,
+paths, or mtimes. The token is opaque and scoped to one Loom implementation;
+consumers compare it for equality and must not parse or persist its checksum
+algorithm as protocol state.
+
 A goal stitch is an immediate child directory of `threads/`, `tied/`, or
 `dropped/` that contains a regular `instructions.md`. A child stitch is only
 an immediate child directory of a recognised stitch that itself contains a

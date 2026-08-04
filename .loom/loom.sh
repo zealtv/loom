@@ -24,6 +24,7 @@ usage:
   loom.sh waiting
   loom.sh next
   loom.sh status
+  loom.sh revision
   loom.sh map [--json]
   loom.sh migrate-v2 [--dry-run|--rollback]
   loom.sh sweep [days]
@@ -41,6 +42,7 @@ notes:
   - child completion is retained in place; only complete goals enter archive trays
   - tie/drop write completed-at; drop also keeps reason.md inside the stitch
   - map and map --json are read-only derived views
+  - revision is a cheap read-only change token for polling consumers
   - mutating --json goes before the stitch id and replaces that command's
     stdout prose with one result object; failures emit one error object
   - markerless non-empty looms require an explicit migrate-v2 after dry-run
@@ -2897,6 +2899,70 @@ cmd_sweep() {
   ensure_trays
 }
 
+revision_file_record() {
+  local path="$1" relative="${1#"$LOOM_DIR"/}" sum
+  if [[ -L "$path" ]]; then
+    printf 'link\t%s\n' "$relative"
+  elif [[ -f "$path" ]]; then
+    sum="$(cksum < "$path")"
+    printf 'file\t%s\t%s\n' "$relative" "$sum"
+  elif [[ -e "$path" ]]; then
+    printf 'other\t%s\n' "$relative"
+  else
+    printf 'missing\t%s\n' "$relative"
+  fi
+}
+
+revision_manifest() {
+  local tray dir relative file needs entry kind
+  revision_file_record "$LOOM_DIR/format-version"
+  revision_file_record "$LOOM_DIR/queue"
+  for tray in threads tied dropped legacy-v1/tied legacy-v1/dropped; do
+    if [[ -d "$LOOM_DIR/$tray" ]]; then
+      printf 'tray\t%s\n' "$tray"
+    elif [[ -e "$LOOM_DIR/$tray" || -L "$LOOM_DIR/$tray" ]]; then
+      printf 'invalid-tray\t%s\n' "$tray"
+    else
+      printf 'missing-tray\t%s\n' "$tray"
+    fi
+  done
+
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    relative="${dir#"$LOOM_DIR"/}"
+    printf 'stitch\t%s\n' "$relative"
+    for file in instructions.md completed-at reason.md; do
+      [[ -e "$dir/$file" || -L "$dir/$file" ]] || continue
+      revision_file_record "$dir/$file"
+    done
+    needs="$dir/needs"
+    if [[ -d "$needs" ]]; then
+      printf 'needs\t%s/needs\n' "$relative"
+      shopt -s nullglob dotglob
+      for entry in "$needs"/*; do
+        [[ "$(basename "$entry")" != . && "$(basename "$entry")" != .. ]] || continue
+        if [[ -L "$entry" ]]; then kind=link
+        elif [[ -f "$entry" ]]; then kind=file
+        elif [[ -d "$entry" ]]; then kind=directory
+        else kind=other
+        fi
+        printf 'need\t%s\t%s\n' "$kind" "${entry#"$LOOM_DIR"/}"
+      done
+      shopt -u nullglob dotglob
+    elif [[ -e "$needs" || -L "$needs" ]]; then
+      printf 'invalid-needs\t%s/needs\n' "$relative"
+    fi
+  done < <(walk_all_stitches | sort)
+}
+
+cmd_revision() {
+  require_loom
+  [[ $# -eq 0 ]] || die "revision takes no arguments"
+  [[ "$(format_version_state)" == v2 ]] ||
+    die "revision requires a format v2 loom (run migrate-v2 first)"
+  revision_manifest | cksum | awk '{ printf "%s-%s\n", $1, $2 }'
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -2963,6 +3029,10 @@ main() {
     status)
       shift
       cmd_status "$@"
+      ;;
+    revision)
+      shift
+      cmd_revision "$@"
       ;;
     map)
       shift
