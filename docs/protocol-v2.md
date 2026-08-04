@@ -134,7 +134,7 @@ Commands resolve IDs globally and fail on missing or duplicate recognised
 IDs. State-changing commands use same-directory renames so their visible state
 transition is atomic.
 
-### `new <id> [parent-id]`
+### `new [--json] <id> [parent-id]`
 
 With no parent, create a plain goal under `threads/`. With a parent, create an
 immediate child of an active recognised stitch. Archived or terminal parents
@@ -482,7 +482,7 @@ and may also be used with the plain map.
 
 ## Structured mutation results
 
-Every lifecycle and queue mutation accepts `--json`: `claim`, `tend`,
+Every lifecycle and queue mutation accepts `--json`: `new`, `claim`, `tend`,
 `release`, `wait`, `resume`, `tie`, `drop`, `queue`, `first`, `before`,
 `after`, and `unqueue`. The flag is recognised only before the first
 positional argument, so a `drop` reason remains literal and may itself contain

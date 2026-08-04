@@ -6,7 +6,7 @@ usage() {
   cat <<'USAGE'
 usage:
   loom.sh init
-  loom.sh new <stitch-id> [parent-stitch-id]
+  loom.sh new [--json] <stitch-id> [parent-stitch-id]
   loom.sh claim [--json] <stitch-id>
   loom.sh tend [--json] <stitch-id>
   loom.sh release [--json] <stitch-id>
@@ -949,13 +949,17 @@ cmd_init() {
 }
 
 cmd_new() {
+  mutation_begin new "$@"
+  set -- "${MUTATION_ARGS[@]}"
   require_loom
   require_v2_mutation
   build_index
   local id="${1:-}"
   local parent_id="${2:-}"
-  [[ -n "$id" ]] || die "new requires <stitch-id>"
+  [[ -n "$id" ]] || die_as usage "new requires <stitch-id>"
+  (( $# <= 2 )) || die_as usage "new accepts <stitch-id> [parent-stitch-id]"
   validate_id "$id"
+  MUTATION_ID="$id"
   ensure_unique_new_id "$id"
 
   local target_parent
@@ -998,8 +1002,8 @@ cmd_new() {
 
   local created
   created="$(create_stitch_dir "$target_parent" "$id")"
-  echo "new $created"
-  echo "next: read, then edit $created/instructions.md (agent harnesses refuse to overwrite unread files)"
+  mutation_result "$id" true "$created" plain \
+    $'new '"$created"$'\nnext: read, then edit '"$created"$'/instructions.md (agent harnesses refuse to overwrite unread files)'
 }
 
 cmd_claim() {

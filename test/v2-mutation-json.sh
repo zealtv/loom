@@ -25,9 +25,17 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 new_test_loom
-"$LOOM" new alpha >/dev/null
+created="$($LOOM new --json alpha)"
+assert_json_field "$created" "doc['command']" "new" "new result command"
+assert_json_field "$created" "doc['id']" "alpha" "new result id"
+assert_json_field "$created" "doc['state']" "plain" "new result state"
+assert_json_field "$created" "doc['path']" "threads/alpha" "new result path"
+assert_json_field "$created" "doc['tray']" "threads" "new result tray"
+assert_json_field "$created" "doc['changed']" "true" "new result changed"
 "$LOOM" new beta >/dev/null
-"$LOOM" new child alpha >/dev/null
+child_created="$($LOOM new --json child alpha)"
+assert_json_field "$child_created" "doc['path']" "threads/alpha/child" \
+  "new child result path"
 
 # --- shape ------------------------------------------------------------------
 
@@ -152,6 +160,9 @@ assert_error_code() {
 }
 
 assert_error_code not_found "$LOOM" claim --json missing >/dev/null
+assert_error_code usage "$LOOM" new --json >/dev/null
+assert_error_code usage "$LOOM" new --json extra one two >/dev/null
+assert_error_code failed "$LOOM" new --json parent >/dev/null
 assert_error_code invalid_id "$LOOM" claim --json 'bad id' >/dev/null
 assert_error_code usage "$LOOM" claim --json >/dev/null
 assert_error_code usage "$LOOM" claim --json one two >/dev/null
@@ -188,7 +199,11 @@ assert_error_code format "$LOOM" claim --json anything >/dev/null
 # --- the human surface is untouched -----------------------------------------
 
 new_test_loom
-"$LOOM" new solo >/dev/null
+new_prose="$($LOOM new solo)"
+assert_contains "$new_prose" "new $TEST_REPO/.loom/threads/solo" \
+  "prose new path unchanged"
+assert_contains "$new_prose" "next: read, then edit" \
+  "prose new advisory unchanged"
 assert_eq "claimed solo" "$("$LOOM" claim solo)" "prose claim unchanged"
 assert_eq "already stitching: solo" "$("$LOOM" claim solo)" \
   "prose idempotent claim unchanged"
