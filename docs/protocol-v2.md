@@ -502,10 +502,14 @@ Every lifecycle, dependency, and queue mutation accepts `--json`: `new`,
 positional argument, so a `drop` reason remains literal and may itself contain
 `--json`.
 
-The flag is additive. Without it every command's output is byte-for-byte what
-it always was, which the agent loop and existing scripts depend on. With it,
-that command's stdout is exactly one JSON object and nothing else, including
-the read-before-edit hint `drop` prints when given no reason.
+The flag is additive. Without it every command keeps its established first
+line, which the agent loop and existing scripts depend on. A successful
+lifecycle mutation that moves a stitch directory (`claim`, `tend`, `release`,
+`wait`, `resume`, `tie`, or `drop`) prints the absolute destination path on a
+second line. Accepted no-ops and mutations that do not move a directory do not
+print a path. With `--json`, that command's stdout is exactly one JSON object
+and nothing else, including the read-before-edit hint `drop` prints when given
+no reason.
 
 A successful mutation emits:
 

@@ -53,7 +53,8 @@ USAGE
 }
 
 # Mutating commands accept --json and then report their result as one JSON
-# object instead of prose. The human output is the default and is unchanged.
+# object instead of prose. Human lifecycle output keeps its established first
+# line and names the destination on a second line when a directory moved.
 MUTATION_JSON=false
 MUTATION_COMMAND=""
 MUTATION_ARGS=()
@@ -141,6 +142,13 @@ mutation_result() {
   shift 4
   if [[ "$MUTATION_JSON" != true ]]; then
     printf '%s\n' "$*"
+    if [[ "$changed" == true && -n "$path" ]]; then
+      case "$MUTATION_COMMAND" in
+        claim|tend|release|wait|resume|tie|drop)
+          printf '%s\n' "$path"
+          ;;
+      esac
+    fi
     return 0
   fi
 

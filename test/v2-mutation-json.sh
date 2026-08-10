@@ -212,7 +212,7 @@ new_test_repo
 printf '1\n' > "$TEST_REPO/.loom/format-version"
 assert_error_code format "$LOOM" claim --json anything >/dev/null
 
-# --- the human surface is untouched -----------------------------------------
+# --- the human surface keeps its first line and reports moved paths ----------
 
 new_test_loom
 new_prose="$($LOOM new solo)"
@@ -220,10 +220,57 @@ assert_contains "$new_prose" "new $TEST_REPO/.loom/threads/solo" \
   "prose new path unchanged"
 assert_contains "$new_prose" "next: read, then edit" \
   "prose new advisory unchanged"
-assert_eq "claimed solo" "$("$LOOM" claim solo)" "prose claim unchanged"
+claim_prose="$("$LOOM" claim solo)"
+assert_eq "claimed solo" "$(printf '%s\n' "$claim_prose" | sed -n '1p')" \
+  "prose claim first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/solo.stitching" \
+  "$(printf '%s\n' "$claim_prose" | sed -n '2p')" \
+  "prose claim names destination"
 assert_eq "already stitching: solo" "$("$LOOM" claim solo)" \
-  "prose idempotent claim unchanged"
-assert_eq "tied solo" "$("$LOOM" tie solo)" "prose tie unchanged"
+  "prose idempotent claim has no destination"
+tie_prose="$("$LOOM" tie solo)"
+assert_eq "tied solo" "$(printf '%s\n' "$tie_prose" | sed -n '1p')" \
+  "prose tie first line unchanged"
+assert_eq "$TEST_REPO/.loom/tied/solo" \
+  "$(printf '%s\n' "$tie_prose" | sed -n '2p')" \
+  "prose tie names destination"
+
+new_test_loom
+"$LOOM" new parent >/dev/null
+"$LOOM" new child parent >/dev/null
+tend_prose="$("$LOOM" tend parent)"
+assert_eq "tending parent" "$(printf '%s\n' "$tend_prose" | sed -n '1p')" \
+  "prose tend first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/parent.tending" \
+  "$(printf '%s\n' "$tend_prose" | sed -n '2p')" \
+  "prose tend names destination"
+release_prose="$("$LOOM" release parent)"
+assert_eq "released parent" \
+  "$(printf '%s\n' "$release_prose" | sed -n '1p')" \
+  "prose release first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/parent" \
+  "$(printf '%s\n' "$release_prose" | sed -n '2p')" \
+  "prose release names destination"
+wait_prose="$("$LOOM" wait parent)"
+assert_eq "waiting parent" "$(printf '%s\n' "$wait_prose" | sed -n '1p')" \
+  "prose wait first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/parent.waiting" \
+  "$(printf '%s\n' "$wait_prose" | sed -n '2p')" \
+  "prose wait names destination"
+resume_prose="$("$LOOM" resume parent)"
+assert_eq "resumed parent" \
+  "$(printf '%s\n' "$resume_prose" | sed -n '1p')" \
+  "prose resume first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/parent" \
+  "$(printf '%s\n' "$resume_prose" | sed -n '2p')" \
+  "prose resume names destination"
+drop_prose="$("$LOOM" drop child 'not needed')"
+assert_eq "dropped child" "$(printf '%s\n' "$drop_prose" | sed -n '1p')" \
+  "prose drop first line unchanged"
+assert_eq "$TEST_REPO/.loom/threads/parent/child.dropped" \
+  "$(printf '%s\n' "$drop_prose" | sed -n '2p')" \
+  "prose drop names destination"
+
 assert_fails_with "stitch 'nope' not found" "$LOOM" claim nope
 assert_fails_with "stitch 'nope' not found" "$LOOM" claim --json nope
 
