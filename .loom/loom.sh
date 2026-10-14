@@ -294,36 +294,48 @@ state_of_name() {
   printf 'plain\n'
 }
 
-state_label() {
-  case "$1" in
-    stitching) printf 'claimed\n' ;;
-    waiting) printf 'waiting\n' ;;
-    tending) printf 'tended\n' ;;
-    tied) printf 'tied\n' ;;
-    dropped) printf 'dropped\n' ;;
-    plain) printf 'loose end\n' ;;
-  esac
+declare -A STATE_LABEL=(
+  [stitching]=claimed
+  [waiting]=waiting
+  [tending]=tended
+  [tied]=tied
+  [dropped]=dropped
+  [plain]="loose end"
+)
+
+# Sets CHILDREN to the recognized children of a directory, without forking.
+recognized_children_r() {
+  local dir="$1" entry entries
+  shopt -s nullglob
+  entries=("$dir"/*)
+  shopt -u nullglob
+  CHILDREN=()
+  for entry in "${entries[@]}"; do
+    [[ -d "$entry" && -f "$entry/instructions.md" ]] || continue
+    CHILDREN+=("$entry")
+  done
 }
 
 recognized_children() {
-  local dir="$1"
-  local entry
-  shopt -s nullglob
-  for entry in "$dir"/*; do
-    [[ -d "$entry" && -f "$entry/instructions.md" ]] || continue
-    printf '%s\n' "$entry"
+  local CHILDREN=()
+  recognized_children_r "$1"
+  (( ${#CHILDREN[@]} == 0 )) || printf '%s\n' "${CHILDREN[@]}"
+}
+
+# Appends every recognized stitch beneath a directory to WALKED, depth first.
+walk_recognized_into() {
+  local CHILDREN=() entry
+  recognized_children_r "$1"
+  for entry in "${CHILDREN[@]}"; do
+    WALKED+=("$entry")
+    walk_recognized_into "$entry"
   done
-  shopt -u nullglob
 }
 
 walk_recognized() {
-  local dir="$1"
-  local entry
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    printf '%s\n' "$entry"
-    walk_recognized "$entry"
-  done < <(recognized_children "$dir")
+  local WALKED=()
+  walk_recognized_into "$1"
+  (( ${#WALKED[@]} == 0 )) || printf '%s\n' "${WALKED[@]}"
 }
 
 walk_all_stitches() {
@@ -866,18 +878,17 @@ is_effectively_ready() {
 has_terminal_ancestor() {
   local dir="$1"
   if [[ "$INDEX_BUILT" == true ]]; then
-    local indexed_id
-    indexed_id="$(strip_state_suffix "$(basename "$dir")")"
-    [[ -n "${INDEX_TERMINAL_ANCESTOR[$indexed_id]:-}" ]]
+    strip_state_suffix_r "${dir##*/}"
+    [[ -n "${INDEX_TERMINAL_ANCESTOR[$REPLY]:-}" ]]
     return
   fi
-  local parent
-  parent="$(dirname "$dir")"
+  local parent="${dir%/*}"
   while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
-    case "$(state_of_name "$(basename "$parent")")" in
+    state_of_name_r "${parent##*/}"
+    case "$REPLY" in
       tied|dropped) return 0 ;;
     esac
-    parent="$(dirname "$parent")"
+    parent="${parent%/*}"
   done
   return 1
 }
@@ -885,20 +896,19 @@ has_terminal_ancestor() {
 has_waiting_ancestor() {
   local dir="$1"
   if [[ "$INDEX_BUILT" == true ]]; then
-    local indexed_id
-    indexed_id="$(strip_state_suffix "$(basename "$dir")")"
-    [[ -n "${INDEX_WAITING_ANCESTOR[$indexed_id]:-}" ]] || return 1
-    printf '%s\n' "${INDEX_WAITING_ANCESTOR[$indexed_id]}"
+    strip_state_suffix_r "${dir##*/}"
+    [[ -n "${INDEX_WAITING_ANCESTOR[$REPLY]:-}" ]] || return 1
+    printf '%s\n' "${INDEX_WAITING_ANCESTOR[$REPLY]}"
     return 0
   fi
-  local parent
-  parent="$(dirname "$dir")"
+  local parent="${dir%/*}"
   while [[ "$parent" != "$LOOM_DIR/threads" ]]; do
-    if [[ "$(state_of_name "$(basename "$parent")")" == waiting ]]; then
+    state_of_name_r "${parent##*/}"
+    if [[ "$REPLY" == waiting ]]; then
       printf '%s\n' "$parent"
       return 0
     fi
-    parent="$(dirname "$parent")"
+    parent="${parent%/*}"
   done
   return 1
 }
@@ -1269,19 +1279,16 @@ print_stitch_tree() {
   local prefix="${2:-}"
   local abandoned="${3:-false}"
   local waiting_inherited="${4:-false}"
-  local entries=()
+  local CHILDREN=() entries=()
   local entry
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    entries+=("$entry")
-  done < <(recognized_children "$dir")
+  recognized_children_r "$dir"
+  entries=("${CHILDREN[@]}")
 
   local count="${#entries[@]}"
   local i=0
   for entry in "${entries[@]}"; do
     i=$((i + 1))
-    local name
-    name="$(basename "$entry")"
+    local name="${entry##*/}"
     local branch="├──"
     local child_prefix="│   "
     if (( i == count )); then
@@ -1290,13 +1297,13 @@ print_stitch_tree() {
     fi
     local tag=""
     local state
-    state="$(state_of_name "$name")"
+    state_of_name_r "$name"; state="$REPLY"
     local child_abandoned="$abandoned"
     local child_waiting="$waiting_inherited"
     if [[ "$abandoned" == true ]]; then
       tag=" (abandoned)"
     elif [[ "$state" != plain ]]; then
-      tag=" ($(state_label "$state"))"
+      tag=" (${STATE_LABEL[$state]})"
       if [[ "$state" == dropped ]]; then
         child_abandoned=true
       elif [[ "$state" == waiting ]]; then
@@ -1308,8 +1315,11 @@ print_stitch_tree() {
       fi
     elif [[ "$waiting_inherited" == true ]]; then
       tag=" (waiting inherited)"
-    elif is_effectively_ready "$(strip_state_suffix "$name")"; then
-      tag=" (loose end)"
+    else
+      strip_state_suffix_r "$name"
+      if is_effectively_ready "$REPLY"; then
+        tag=" (loose end)"
+      fi
     fi
     printf '%s%s %s%s\n' "$prefix" "$branch" "$name" "$tag"
     print_stitch_tree \
@@ -1327,10 +1337,11 @@ has_unresolved_children() {
 
 list_goals() {
   local dir
-  while IFS= read -r dir; do
-    [[ -n "$dir" ]] || continue
-    basename "$dir"
-  done < <(recognized_children "$LOOM_DIR/threads")
+  local CHILDREN=()
+  recognized_children_r "$LOOM_DIR/threads"
+  for dir in "${CHILDREN[@]}"; do
+    printf '%s\n' "${dir##*/}"
+  done
 }
 
 list_loose_ends() {
@@ -1358,7 +1369,7 @@ list_ready_ids() {
 
   while IFS= read -r dir; do
     [[ -n "$dir" ]] || continue
-    id="$(strip_state_suffix "$(basename "$dir")")"
+    strip_state_suffix_r "${dir##*/}"; id="$REPLY"
     if [[ -z "${emitted[$id]:-}" ]] && is_effectively_ready "$id"; then
       printf '%s\n' "$id"
     fi
@@ -1406,9 +1417,10 @@ list_by_state() {
   local dir
   while IFS= read -r dir; do
     [[ -n "$dir" ]] || continue
-    [[ "$(state_of_name "$(basename "$dir")")" == "$state" ]] || continue
+    state_of_name_r "${dir##*/}"
+    [[ "$REPLY" == "$state" ]] || continue
     has_terminal_ancestor "$dir" && continue
-    if [[ "$scope" == goal && "$(dirname "$dir")" != "$LOOM_DIR/threads" ]]; then
+    if [[ "$scope" == goal && "${dir%/*}" != "$LOOM_DIR/threads" ]]; then
       continue
     fi
     printf '%s\n' "${dir#$LOOM_DIR/threads/}"
