@@ -811,6 +811,20 @@ build_index() {
           *) edge_state=blocked ;;
         esac
       fi
+      # A resolved or archived dependent can no longer be blocked, so its
+      # unsatisfied edges are history, not health. Self-edges stay broken:
+      # they are structural errors whatever the dependent's state.
+      if [[ "$edge_state" != satisfied && "$cause" != invalid ]]; then
+        case "${INDEX_STATE[$id]}" in
+          tied|dropped|abandoned) edge_state=inert; cause="" ;;
+          *)
+            if [[ "${INDEX_ARCHIVED[$id]}" == true ]]; then
+              edge_state=inert
+              cause=""
+            fi
+            ;;
+        esac
+      fi
       index_add_edge "$id" "$target" "$edge_state" "$cause"
     done
     shopt -u nullglob dotglob
@@ -1787,7 +1801,7 @@ map_emit_json() {
   mapfile -t ready < <(list_ready_ids)
   mapfile -t recent < <(map_recent_ids)
 
-  printf '{"schema_version":1,"format_version":2,"loom_root":'
+  printf '{"schema_version":2,"format_version":2,"loom_root":'
   json_string "$LOOM_DIR"
 
   printf ',"stitches":['

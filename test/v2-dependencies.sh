@@ -92,6 +92,39 @@ assert_fails_with "missing" "$LOOM" status
 need dropped-user dropped-target
 assert_fails_with "dropped" "$LOOM" status
 
+# Dropping a goal whose children anchor each other archives those edges with
+# it. They can block nothing, so they are inert history, not broken health.
+new_test_loom
+"$LOOM" new abandoned-goal >/dev/null
+for id in step-1 step-2 step-3; do
+  "$LOOM" new "$id" abandoned-goal >/dev/null
+done
+"$LOOM" anchor step-2 step-1 >/dev/null
+"$LOOM" anchor step-3 step-2 >/dev/null
+"$LOOM" tie step-1 >/dev/null
+"$LOOM" drop abandoned-goal no-longer-needed >/dev/null
+archived_status="$("$LOOM" status)" ||
+  fail "edges inside a dropped archive must not fail status"
+assert_not_contains "$archived_status" "broken" \
+  "edges inside a dropped archive are not broken"
+assert_not_contains "$archived_status" "step-3 -> step-2" \
+  "inert edges stay out of status"
+archived_map="$("$LOOM" map --json)" ||
+  fail "edges inside a dropped archive must not fail map --json"
+assert_eq $'step-2>step-1 satisfied None\nstep-3>step-2 inert None' \
+  "$(python3 -c '
+import json, sys
+for e in json.load(sys.stdin)["dependency_edges"]:
+    print("%s>%s %s %s" % (e["from"], e["to"], e["status"], e["reason"]))
+' <<< "$archived_map")" \
+  "archived edges keep satisfied history and report the rest inert"
+"$LOOM" new live-user >/dev/null
+"$LOOM" anchor live-user step-1 >/dev/null
+need live-user step-2
+assert_fails_with "live-user -> step-2 (dropped)" "$LOOM" status
+assert_eq "" "$("$LOOM" loose-ends)" \
+  "an active stitch needing an abandoned stitch is still broken"
+
 new_test_loom
 for id in self a b c x y; do
   "$LOOM" new "$id" >/dev/null

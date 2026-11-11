@@ -172,6 +172,10 @@ satisfies the dependency. Active or waiting targets block B; missing, dropped,
 or ambiguous targets are broken and reported by `status`. Dependency cycles
 are reported once per cycle, and their members are never ready.
 
+Once B is itself tied, dropped or archived, its unsatisfied edges can block
+nothing: they become `inert` history, so dropping a goal whose children anchor
+each other leaves `status` healthy.
+
 `needs/` is supporting material, not decomposition. This lets dependencies
 cross branches and threads and represent fan-out and diamond-shaped work
 without inventing parentage.

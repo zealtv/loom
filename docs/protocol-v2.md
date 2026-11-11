@@ -273,6 +273,15 @@ terminal children, goal archives, and migrated legacy records:
 A tied descendant remains satisfying even when retained in a dropped archive;
 an unfinished descendant abandoned by that archive is broken.
 
+The table above applies to an active dependent. When the dependent itself is
+tied, dropped, abandoned, or inside a goal archive, it can no longer be
+blocked, so any edge that would otherwise be blocked or broken is **inert**:
+retained as history, never a health problem. A satisfied edge stays
+satisfied. A self-edge stays broken, because it is a structural error whatever
+the dependent's state. Dropping a goal whose children anchor each other
+therefore leaves no broken dependencies behind, while an active stitch that
+needs a stitch from that archive is still broken.
+
 Cycles are detected across all recognised IDs and are reported
 deterministically. Each strongly connected cyclic component appears once,
 with member IDs in bytewise order; a self-edge is both an invalid self-edge
@@ -294,7 +303,8 @@ broken edge can be repaired.
 `status` separates ordinary blocked edges from broken edges. It names the
 dependent, target, and `missing`, `dropped`, or `ambiguous` cause. It exits
 non-zero for malformed records, duplicate IDs, broken dependencies, or
-cycles; ordinary unresolved dependencies do not make it fail.
+cycles; ordinary unresolved dependencies do not make it fail. Inert edges are
+not listed and never affect the exit code.
 
 ## Sparse preference queue
 
@@ -419,7 +429,7 @@ deterministic tie-break.
 `map --json` emits one JSON object with this schema:
 
 ```text
-schema_version       integer, currently 1
+schema_version       integer, currently 2
 format_version       integer, currently 2
 loom_root            absolute string path to .loom
 stitches             array of stitch objects, sorted by relative path
@@ -454,8 +464,14 @@ cycle                 array of component member IDs, or []
 ```
 
 Every dependency object has `from`, `to`, `status`, and `reason`.
-`status` is `satisfied`, `blocked`, or `broken`; `reason` is null unless
-broken, then `missing`, `dropped`, `ambiguous`, or `invalid`.
+`status` is `satisfied`, `blocked`, `broken`, or `inert`; `reason` is null
+unless broken, then `missing`, `dropped`, `ambiguous`, or `invalid`. `inert`
+marks an unsatisfied edge whose dependent is terminal or archived (see Hard
+dependencies); viewers can show it as history rather than as a problem.
+
+Schema 2 added `inert`. A schema 1 consumer that switches exhaustively on
+`status` would misread it, which is why the value is a `schema_version`
+change even though it adds no field.
 
 Every diagnostic has `severity` (`warning` or `error`), a stable `code`, a
 human-readable `message`, and nullable `stitch_id` and `target_id`. JSON
