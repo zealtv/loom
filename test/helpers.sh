@@ -110,11 +110,11 @@ fi
 # byte count or mtime changed. Paths print relative to the directory.
 tree_manifest() {
   local dir="$1"
-  local path
+  local entry
   (
     cd "$dir" || exit 1
-    find . | LC_ALL=C sort | while IFS= read -r path; do
-      printf '%s|%s\n' "$path" "$(file_stamp "$path")"
+    find . | LC_ALL=C sort | while IFS= read -r entry; do
+      printf '%s|%s\n' "$entry" "$(file_stamp "$entry")"
     done
   )
 }
