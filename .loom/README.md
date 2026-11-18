@@ -16,32 +16,39 @@ When you open `.loom/threads/`, you are looking at the work you have on the loom
 
 ## Quickstart
 
-Install the released v2 files into the current repository:
+To install loom, copy the `.loom/` directory into the project; to upgrade, run
+`install.sh`. The released v2 files:
 
 ```sh
 loom_source="$(mktemp -d)"
 git clone --depth 1 --branch v2.1.1 https://github.com/zealtv/loom.git "$loom_source"
-"$loom_source/install.sh" "$PWD"
+cp -R "$loom_source/.loom" .loom        # install (a folder with no .loom/)
+"$loom_source/install.sh" "$PWD"        # upgrade (a folder with a .loom/)
 ```
 
-This copies `loom.sh`, `README.md`, and the v2 protocol document into the
-project's `.loom/` directory, then runs `.loom/loom.sh init`.
+From a local clone of Loom, the upgrade is:
 
-For a fresh loom, `init` creates `threads/`, `tied/`, and `dropped/` next to
-itself, seeds the two archive trays so they survive a commit and clone, and
-writes `format-version` with value `2`. It does not mark a markerless loom
-containing existing history as v2.
-`loom.sh` operates on the `.loom/` directory it lives in, so each copy is
-self-contained.
+```sh
+./install.sh /path/to/host-repository
+```
+
+`install.sh` refreshes `loom.sh`, `README.md`, and the v2 protocol document in
+the project's `.loom/` directory, then runs `.loom/loom.sh init`. It never
+touches `threads/`, `tied/`, `dropped/`, `queue`, or an existing
+`format-version`.
 
 The repository ships `.loom/` as `init` would leave it: the trays and a
-`format-version` of `2`. To start a loom in a folder that has none, copy
-`.loom/` there with `cp -R`; no `init` is needed. Never copy it over a folder
-that already has a `.loom/`: the copied marker would declare that loom v2
-without migrating it. For an existing loom, use `install.sh`, which
-leaves the marker and the history alone (see Quickstart).
+`format-version` of `2`, so a copy into a folder with no `.loom/` needs no
+`init`. Never copy it over a folder that already has a `.loom/`: the copied
+marker would declare that loom v2 without migrating it.
 
-Installing over an existing markerless v1 loom updates only the executable and
+`init` creates `threads/`, `tied/`, and `dropped/` next to itself, seeds the
+two archive trays so they survive a commit and clone, and writes
+`format-version` with value `2` for a fresh loom. It does not mark a markerless
+loom containing existing history as v2. `loom.sh` operates on the `.loom/`
+directory it lives in, so each copy is self-contained.
+
+Upgrading an existing markerless v1 loom updates only the executable and
 documentation; it does not migrate task state or write `format-version`.
 Inspect and run the explicit migration after taking a backup:
 
@@ -49,13 +56,6 @@ Inspect and run the explicit migration after taking a backup:
 .loom/loom.sh migrate-v2 --dry-run
 .loom/loom.sh migrate-v2
 ```
-
-From a local clone of Loom, the equivalent install is:
-
-```sh
-./install.sh /path/to/host-repository
-```
-
 
 ## What a loom is for
 

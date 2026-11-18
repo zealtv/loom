@@ -15,6 +15,7 @@ tests=(
   v2-revision.sh
   v2-map.sh
   v2-release-acceptance.sh
+  installer-upgrade.sh
 )
 
 for test_file in "${tests[@]}"; do
