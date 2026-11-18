@@ -60,7 +60,7 @@ printf '2026-01-01T00:15:00+00:00\n' > \
   "$TEST_REPO/.loom/tied/completed/completed-at"
 
 before_manifest="$(
-  find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest "$TEST_REPO/.loom"
 )"
 if json_one="$("$LOOM" map --json 2>/dev/null)"; then
   fail "JSON map should share status health for broken dependencies and cycles"
@@ -72,7 +72,7 @@ if plain_map="$("$LOOM" map 2>/dev/null)"; then
   fail "plain map should share status health for broken dependencies and cycles"
 fi
 after_manifest="$(
-  find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest "$TEST_REPO/.loom"
 )"
 
 assert_eq "$json_one" "$json_two" "JSON map must be deterministic"

@@ -15,7 +15,7 @@ make_v1_base() {
 loom_manifest() {
   (
     cd "$TEST_REPO"
-    find .loom -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+    tree_manifest .loom
     find .loom -type f -print0 |
       LC_ALL=C sort -z |
       xargs -0 cksum

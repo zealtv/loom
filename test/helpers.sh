@@ -95,6 +95,30 @@ assert_fails_with() {
   assert_contains "$output" "$needle" "failure from '$*'"
 }
 
+# Portable file metadata. GNU stat takes -c; BSD/macOS stat takes -f. Try GNU
+# first: on GNU systems "stat -f" means filesystem status and would not fail.
+if stat -c %Y / >/dev/null 2>&1; then
+  file_mtime() { stat -c %Y "$1"; }
+  file_stamp() { stat -c '%F|%s|%y' "$1"; }
+else
+  file_mtime() { stat -f %m "$1"; }
+  file_stamp() { stat -f '%HT|%z|%Fm' "$1"; }
+fi
+
+# Print one "path|type|size|mtime" line per entry under a directory (itself
+# included), sorted by path, so two snapshots compare equal only if no path,
+# byte count or mtime changed. Paths print relative to the directory.
+tree_manifest() {
+  local dir="$1"
+  local path
+  (
+    cd "$dir" || exit 1
+    find . | LC_ALL=C sort | while IFS= read -r path; do
+      printf '%s|%s\n' "$path" "$(file_stamp "$path")"
+    done
+  )
+}
+
 write_instructions() {
   local dir="$1"
   local id="$2"

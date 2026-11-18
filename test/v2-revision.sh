@@ -5,11 +5,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/helpers.sh"
 require_v2_stage 7 "cheap revision probe"
 
 new_test_loom
-before_manifest="$(find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort)"
+before_manifest="$(tree_manifest "$TEST_REPO/.loom")"
 empty_revision="$("$LOOM" revision)"
 assert_eq "$empty_revision" "$("$LOOM" revision)" \
   "revision is stable when the loom does not change"
-after_manifest="$(find "$TEST_REPO/.loom" -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort)"
+after_manifest="$(tree_manifest "$TEST_REPO/.loom")"
 assert_eq "$before_manifest" "$after_manifest" "revision changed the loom"
 
 "$LOOM" new work >/dev/null

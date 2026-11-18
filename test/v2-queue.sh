@@ -151,11 +151,11 @@ assert_eq $'# first\n\n# second' \
   "queue --set preserves comments and blanks in relative order"
 
 queue_before="$(cksum < "$TEST_REPO/.loom/queue")"
-queue_mtime_before="$(stat -c %Y "$TEST_REPO/.loom/queue")"
+queue_mtime_before="$(file_mtime "$TEST_REPO/.loom/queue")"
 "$LOOM" queue --set gamma alpha delta >/dev/null
 assert_eq "$queue_before" "$(cksum < "$TEST_REPO/.loom/queue")" \
   "repeating queue --set preserves bytes"
-assert_eq "$queue_mtime_before" "$(stat -c %Y "$TEST_REPO/.loom/queue")" \
+assert_eq "$queue_mtime_before" "$(file_mtime "$TEST_REPO/.loom/queue")" \
   "repeating queue --set is a filesystem no-op"
 "$LOOM" queue --set >/dev/null
 assert_eq "" "$(queue_ids)" "queue --set with no IDs clears the queue"

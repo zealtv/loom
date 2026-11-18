@@ -21,7 +21,7 @@ assert_contains "$(<"$TEST_TMP/fresh-map.json")" \
   '"format_version":2' "fresh installed map"
 before_reads="$(
   cd "$TEST_REPO"
-  find .loom -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest .loom
 )"
 "$LOOM" status >/dev/null
 "$LOOM" next >/dev/null
@@ -32,7 +32,7 @@ before_reads="$(
 "$LOOM" map --json >/dev/null
 after_reads="$(
   cd "$TEST_REPO"
-  find .loom -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest .loom
 )"
 assert_eq "$before_reads" "$after_reads" \
   "release read commands changed paths, bytes, or mtimes"
@@ -57,12 +57,12 @@ assert_fails_with "migrate-v2 --dry-run" "$LOOM" new forbidden
 
 before_dry_run="$(
   cd "$TEST_REPO"
-  find .loom -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest .loom
 )"
 "$LOOM" migrate-v2 --dry-run > "$TEST_TMP/migrate-plan.txt"
 after_dry_run="$(
   cd "$TEST_REPO"
-  find .loom -printf '%P|%y|%s|%T@\n' | LC_ALL=C sort
+  tree_manifest .loom
 )"
 assert_eq "$before_dry_run" "$after_dry_run" \
   "release migration dry-run changed deployed state"
