@@ -22,8 +22,18 @@ To install loom, copy the `.loom/` directory into the project; to upgrade, run
 ```sh
 loom_source="$(mktemp -d)"
 git clone --depth 1 --branch v2.2.0 https://github.com/zealtv/loom.git "$loom_source"
-cp -R "$loom_source/.loom" .loom        # install (a folder with no .loom/)
-"$loom_source/install.sh" "$PWD"        # upgrade (a folder with a .loom/)
+```
+
+Then, in a folder with no `.loom/`, install:
+
+```sh
+cp -R "$loom_source/.loom" .loom
+```
+
+Or, in a folder that has one, upgrade:
+
+```sh
+"$loom_source/install.sh" "$PWD"
 ```
 
 From a local clone of Loom, the upgrade is:
