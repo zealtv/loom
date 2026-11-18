@@ -10,6 +10,7 @@ Copy `.loom/` into your project:
 
 ```sh
 git clone https://github.com/zealtv/loom
+mkdir -p my-project
 cp -R loom/.loom my-project/
 ```
 
