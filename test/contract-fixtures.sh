@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROTOCOL="$ROOT/docs/protocol-v2.md"
+PROTOCOL="$ROOT/.loom/docs/protocol-v2.md"
 MAP_FIXTURE="$ROOT/test/fixtures/map-v2-shape.json"
 
 [[ -f "$PROTOCOL" ]] || {

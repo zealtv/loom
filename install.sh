@@ -14,9 +14,9 @@ dest="$target/.loom"
 mkdir -p "$dest"
 cp -f "$REPO_DIR/.loom/loom.sh" "$dest/loom.sh"
 chmod +x "$dest/loom.sh"
-cp -f "$REPO_DIR/README.md" "$dest/README.md"
+cp -f "$REPO_DIR/.loom/README.md" "$dest/README.md"
 mkdir -p "$dest/docs"
-cp -f "$REPO_DIR/docs/protocol-v2.md" "$dest/docs/protocol-v2.md"
+cp -f "$REPO_DIR/.loom/docs/protocol-v2.md" "$dest/docs/protocol-v2.md"
 "$dest/loom.sh" init
 
 echo "installed $dest"
